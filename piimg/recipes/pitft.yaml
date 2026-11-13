@@ -1,0 +1,47 @@
+# Adafruit PiTFT, offline. Port of the old raspi-img-pitft script, which ran
+# Adafruit's adafruit-pitft.py (--display=35r --rotation=90 --install-type=fbcp).
+#
+# On current Raspberry Pi OS the display is an ordinary device-tree overlay
+# shipped with the kernel (see /boot/firmware/overlays/README), so no installer
+# has to run: this is just config.txt. NOT verified on real hardware.
+name: Adafruit PiTFT display overlay
+vars:
+  display:
+    default: 35r
+    choices: [22, 28r, 28c, 35r]
+    help: "22 = 2.2in, 28r/28c = 2.8in resistive/capacitive, 35r = 3.5in resistive"
+  rotation:
+    default: 90
+    choices: [0, 90, 180, 270]
+  extra:
+    default: ""
+    help: 'more overlay parameters, each with a leading comma, e.g. ",speed=32000000,fps=20"'
+  console:
+    default: "no"
+    choices: ["yes", "no"]
+    help: "yes = also put the text console on the TFT (adds fbcon=map:10 to cmdline.txt)"
+
+steps:
+  - when: {var: {name: display, equals: "22"}}
+    then:
+      - {name: check overlay, when: {not: {exists: "{{boot}}/overlays/pitft22.dtbo"}}, fail: "this kernel has no pitft22 overlay"}
+      - config_txt: {add: "dtoverlay=pitft22,rotate={{rotation}}{{extra}}"}
+  - when: {var: {name: display, equals: 28r}}
+    then:
+      - {when: {not: {exists: "{{boot}}/overlays/pitft28-resistive.dtbo"}}, fail: "this kernel has no pitft28-resistive overlay"}
+      - config_txt: {add: "dtoverlay=pitft28-resistive,rotate={{rotation}}{{extra}}"}
+  - when: {var: {name: display, equals: 28c}}
+    then:
+      - {when: {not: {exists: "{{boot}}/overlays/pitft28-capacitive.dtbo"}}, fail: "this kernel has no pitft28-capacitive overlay"}
+      - config_txt: {add: "dtoverlay=pitft28-capacitive,rotate={{rotation}}{{extra}}"}
+  - when: {var: {name: display, equals: 35r}}
+    then:
+      - {when: {not: {exists: "{{boot}}/overlays/pitft35-resistive.dtbo"}}, fail: "this kernel has no pitft35-resistive overlay"}
+      - config_txt: {add: "dtoverlay=pitft35-resistive,rotate={{rotation}}{{extra}}"}
+
+  # The TFT is on SPI.
+  - raspi_config: ["do_spi 0"]
+
+  - when: {var: {name: console, equals: "yes"}}
+    then:
+      - cmdline: {add: ["fbcon=map:10", "fbcon=font:VGA8x8"]}

@@ -1,0 +1,44 @@
+# Exercises every kind of step. Run:  uv run piimg run work.qcow2 examples/demo/recipe.yaml
+name: piimg demo
+vars:
+  greeting: {default: "hello"}
+steps:
+  - echo: "image boot dir is {{boot}}"
+  - mkdir: {path: /opt/demo, mode: "0755"}
+  - copy: {src: files/opt/demo, dest: /opt/demo}          # whole directory, modes + symlinks kept
+  - write:
+      path: /opt/demo/greeting.txt
+      content: "{{greeting}} from {{boot}}\n"
+      template: true
+  - write: {path: /opt/demo/raw.sh, content: "echo ${HOME} {{not_a_var}}\n", mode: "0755"}   # no templating
+  - symlink: {path: /opt/demo/current, target: /opt/demo/greeting.txt}
+  - line: {path: /etc/hosts, line: "10.12.194.2 host.gadget", match: '^10\.12\.194\.2'}
+  - sub: {path: /opt/demo/greeting.txt, pattern: "hello", replace: "HELLO", must_match: true}
+  - chmod: {path: /opt/demo/greeting.txt, mode: "0600"}
+  - when: {all: [{os_release: {VERSION_CODENAME: trixie}}, {package: openssh-server}, {not: {package: dnsmasq}}]}
+    then:
+      - echo: "trixie + openssh-server, no dnsmasq yet"
+      - systemd: {enable: [ssh.service]}
+    else:
+      - fail: "unexpected base image"
+  - when: {grep: {path: "{{boot}}/config.txt", pattern: '^dtparam=i2c_arm=on'}}
+    then: [{echo: "i2c already enabled"}]
+    else: [{raspi_config: ["do_i2c 0", "nonint do_hostname demo-pi", "do_serial_cons 1"]}]
+  - modules: [i2c-dev]
+  - python_recipe: {name: gadget-net, args: {iface: usb0}}
+  - name: this should be reported, not crash
+    chown: {path: /opt/demo/greeting.txt, owner: "pi:pi"}
+    ignore_errors: true
+  - live:
+      network: true
+      timeout: 600
+      script: |
+        echo "== live: arch=$(dpkg --print-architecture) kernel=$(uname -r) user=$(id -un)"
+        echo "live-step-ran" > /opt/demo/live-was-here
+        cat /opt/demo/greeting.txt
+        ls /sys/class/net
+        curl -sS -m 25 -I http://deb.debian.org/debian/ | head -1 || echo "NO-NETWORK"
+        exit 0
+  - when: {exists: /opt/demo/live-was-here}
+    then: [{echo: "live marker visible offline again"}]
+    else: [{fail: "live step left no trace"}]

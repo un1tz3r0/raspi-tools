@@ -1,0 +1,14 @@
+# images and overlays
+*.img
+*.img.xz
+*.zip
+*.qcow2
+*.part
+.piimg-edit-*.yaml
+# the old Docker/expect scripts, kept locally only
+attic/
+# tooling
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
