@@ -283,7 +283,9 @@ class Image:
     def config_txt_add(self, line, section="all"):
         """Ensure `line` is present in the given [section] of config.txt.
 
-        Added at the end of that section (the last one with that name); the
+        Nothing changes if any block of that section already has the line
+        (for [all], the top of the file before the first header counts too).
+        Otherwise it is added at the end of the section's last block; the
         section is created at the end of the file if missing. Returns True if
         the file changed.
         """
@@ -291,6 +293,11 @@ class Image:
         header = f"[{section}]"
         hdr_idx = [i for i, l in enumerate(lines) if re.fullmatch(r"\s*\[.*\]\s*", l)]
         starts = [i for i in hdr_idx if lines[i].strip() == header]
+        blocks = [(s, next((i for i in hdr_idx if i > s), len(lines))) for s in starts]
+        if section == "all":
+            blocks.append((-1, hdr_idx[0] if hdr_idx else len(lines)))
+        if any(line == l.strip() for s, e in blocks for l in lines[s + 1:e]):
+            return False
 
         if not starts:
             if section == "all" and not hdr_idx:

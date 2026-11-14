@@ -70,6 +70,15 @@ ACTIONS = {a.name: a for a in [
            [Field("src", "str", True, "local file or directory, relative to the recipe file"),
             Field("dest", "str", True, PATH), Field("mode", "mode", help=MODE + " (files only)"),
             Field("owner", help=OWNER)], example="copy: {src: files/opt/demo, dest: /opt/demo}"),
+    Action("download", "fetch a file from the web into the image", "Downloads a file on this computer "
+           "(not in the image, so no network or emulation is needed there) and writes it into the image: "
+           "the offline form of a vendor script's `wget URL -O /boot/overlays/x.dtbo`. Give sha256: a "
+           "changed file then fails the step, and the file is cached so later runs work offline.",
+           [Field("url", "str", True, "http(s) URL (file:// works too)"),
+            Field("dest", "str", True, PATH),
+            Field("sha256", "str", help="the file's SHA-256 in hex (sha256sum FILE)"),
+            Field("mode", "mode", help=MODE + "; default 0644"), Field("owner", help=OWNER)],
+           example="download: {url: https://example.com/x.dtbo, dest: \"{{boot}}/overlays/x.dtbo\", sha256: ...}"),
     Action("symlink", "create a symbolic link", "Creates (or replaces) a symbolic link.",
            [Field("path", "str", True, "the link to create"), Field("target", "str", True, "what it points to")],
            example="symlink: {path: /opt/current, target: /opt/v2}"),

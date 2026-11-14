@@ -93,6 +93,7 @@ class Editor:
     can_preview = True   # a dry run is possible
     add_label = "Add"
     remove_label = "Remove"
+    internal = ()        # columns that are bookkeeping (shown elsewhere or not at all), not details
 
     def __init__(self):
         self.items = []
@@ -422,11 +423,11 @@ class UsersEditor(Editor):
     name = "users"
     title = "Users"
     summary_text = "passwords, shells, ssh keys; rename or delete accounts"
-    help = ("The accounts people log in as (root and uid 1000 and up). Expand one to set a new "
-            "password, lock or unlock it, change its login shell or name, or edit its authorized ssh "
-            "keys (one per line); the trash button deletes it with its home folder. A new password is "
-            "hashed here and only the hash goes into the image. To create the first account of a "
-            "fresh image, use `apply first-boot`.")
+    help = ("The accounts people log in as (root and uid 1000 and up). For each one you can set a new "
+            "password, lock or unlock it, change its login shell or name, edit its authorized ssh keys "
+            "(one per line), or delete it with its home folder. A new password is hashed here and only "
+            "the hash goes into the image. To create the first account of a fresh image, use "
+            "`apply first-boot`.")
     replaces = ("users", "passwd", "ssh-key")
     group = "Repair & configure"
     query = ("users", "--keys")
@@ -557,6 +558,11 @@ class SystemEditor(Editor):
     columns = [Column("setting", "Setting"), Column("value", "Value", editable=True, inline=True),
                Column("label", "Label"), Column("kind", "Kind"), Column("help", "Help")]
     noun = ("setting", "settings")
+    internal = ("label", "kind", "help")
+
+    def describe_changes(self):
+        return [f"{self.label(i)}: {self.show_value(i, 'value', i.orig.get('value'))} → "
+                f"{self.show_value(i, 'value', i.get('value'))}" for i in self.changed_items()]
 
     def label(self, item):
         return item.get("label") or item.key

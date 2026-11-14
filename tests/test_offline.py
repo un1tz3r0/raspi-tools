@@ -281,3 +281,135 @@ def test_stopping_a_guestfs_tool_apparmor_will_not_let_us_signal():
     p = subprocess.Popen(["sleep", "30"])
     _stop_guestfs_tool(p)
     assert p.returncode is not None
+
+
+# ------------------------------------------------------------ recipes on an in-memory image
+
+class DictImage:
+    """Just enough of guest.Image for the file-editing recipe steps, on a dict of path -> bytes."""
+
+    def __init__(self, files):
+        from piimg.guest import Image
+        self.files = {p: (v.encode() if isinstance(v, str) else v) for p, v in files.items()}
+        self.boot = "/boot/firmware"
+        for name in ("config_txt_add", "cmdline_add", "cmdline_remove", "config_var", "sub"):
+            setattr(self, name, getattr(Image, name).__get__(self))
+
+    config_txt = property(lambda self: f"{self.boot}/config.txt")
+    cmdline_txt = property(lambda self: f"{self.boot}/cmdline.txt")
+
+    def exists(self, p):
+        return p in self.files
+
+    lexists = exists
+
+    def read_text(self, p):
+        return self.files[p].decode()
+
+    def write(self, p, data, mode=0o644, uid=0, gid=0):
+        self.files[p] = data.encode() if isinstance(data, str) else bytes(data)
+
+    def replace_text(self, p, text):
+        self.write(p, text)
+
+    def text(self, p):
+        return self.files[p].decode()
+
+
+TRIXIE_CONFIG = """dtparam=audio=on
+display_auto_detect=1
+dtoverlay=vc4-kms-v3d
+max_framebuffers=2
+
+[cm4]
+otg_mode=1
+
+[pi5]
+dtoverlay=nospi10
+
+[all]
+"""
+
+
+def run_on(img, recipe, dry=False, **vars):
+    from piimg.script import find_recipe
+    r = Runner("x.img", find_recipe(recipe), vars, dry_run=dry, log=lambda *a: None)
+    r.img = img
+    r.run_steps(r.doc["steps"], "steps")
+
+
+def test_config_txt_add_sees_the_line_anywhere_in_all():
+    img = DictImage({"/boot/firmware/config.txt": TRIXIE_CONFIG})
+    assert not img.config_txt_add("dtoverlay=vc4-kms-v3d")       # at the top: [all] already
+    assert img.config_txt_add("dtoverlay=vc4-kms-v3d", "pi4")      # but not in [pi4]
+    assert not img.config_txt_add("otg_mode=1", "cm4")
+    assert img.config_txt_add("dtparam=spi=on")
+    text = img.text("/boot/firmware/config.txt")
+    assert text.count("dtoverlay=vc4-kms-v3d") == 2
+    assert text.endswith("\n[pi4]\ndtoverlay=vc4-kms-v3d\n")
+    assert "[all]\ndtparam=spi=on\n" in text
+
+
+@pytest.fixture
+def download_env(tmp_path, monkeypatch):
+    import hashlib
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    src = tmp_path / "web" / "Thing.dtbo"
+    src.parent.mkdir()
+    src.write_bytes(b"\xd0\x0d\xfe\xed overlay")
+    return src, hashlib.sha256(src.read_bytes()).hexdigest()
+
+
+def test_download_checks_and_caches(tmp_path, download_env):
+    from piimg.script import RecipeError
+    src, sha = download_env
+    recipe = tmp_path / "r.yaml"
+    recipe.write_text("vars: {sha: {default: x}}\nsteps:\n"
+                      f"  - download: {{url: '{src.as_uri()}', sha256: '{{{{sha}}}}', dest: '{{{{boot}}}}/overlays/t.dtbo'}}\n")
+    img = DictImage({})
+    r = Runner("x.img", recipe, {"sha": sha}, dry_run=True, log=lambda *a: None)
+    r.img = img
+    r.run_steps(r.doc["steps"], "steps")
+    assert img.files == {}                                  # a dry run fetches and writes nothing
+    r = Runner("x.img", recipe, {"sha": sha}, log=lambda *a: None)
+    r.img = img
+    r.run_steps(r.doc["steps"], "steps")
+    assert img.files["/boot/firmware/overlays/t.dtbo"] == src.read_bytes()
+    src.unlink()                                            # offline now: the cache serves it
+    img.files.clear()
+    r.run_steps(r.doc["steps"], "steps")
+    assert img.files["/boot/firmware/overlays/t.dtbo"].startswith(b"\xd0\x0d")
+    src.write_bytes(b"changed upstream")
+    r = Runner("x.img", recipe, {"sha": "0" * 64}, log=lambda *a: None)
+    r.img = img
+    with pytest.raises(RecipeError, match="SHA-256 is"):
+        r.run_steps(r.doc["steps"], "steps")
+    r = Runner("x.img", recipe, {"sha": "not-a-hash"}, log=lambda *a: None)
+    r.img = img
+    with pytest.raises(RecipeError, match="64 hex digits"):
+        r.run_steps(r.doc["steps"], "steps")
+
+
+def test_waveshare_35dsi_recipe(download_env):
+    src, sha = download_env
+    cmdline = "console=serial0,115200 console=tty1 root=PARTUUID=1-02 rootwait quiet splash\n"
+    img = DictImage({"/boot/firmware/config.txt": TRIXIE_CONFIG, "/boot/firmware/cmdline.txt": cmdline})
+    opts = dict(dtbo_url=src.as_uri(), dtbo_sha256=sha)
+    run_on(img, "waveshare-35dsi", **opts)
+    config = img.text("/boot/firmware/config.txt")
+    assert config.count("dtoverlay=vc4-kms-v3d") == 1
+    assert config.endswith("[all]\ndtoverlay=waveshare_35DSI,35H\n")
+    assert img.text("/boot/firmware/cmdline.txt") == cmdline           # rotation 0: no video=
+    assert img.files["/boot/firmware/overlays/waveshare_35DSI.dtbo"] == src.read_bytes()
+
+    # again with other settings: the earlier lines are replaced, not added to
+    run_on(img, "waveshare-35dsi", port="dsi0", rotation=90, **opts)
+    run_on(img, "waveshare-35dsi", port="dsi0", rotation=270, **opts)
+    config = img.text("/boot/firmware/config.txt")
+    assert config.count("waveshare_35DSI") == 1 and "dtoverlay=waveshare_35DSI,35H,dsi0\n" in config
+    words = img.text("/boot/firmware/cmdline.txt").split()
+    assert words[-2:] == ["video=DSI-1:480x800e,rotate=270", "video=DSI-2:480x800e,rotate=270"]
+    assert sum(w.startswith("video=") for w in words) == 2 and "rootwait" in words
+
+    run_on(img, "waveshare-35dsi", **opts)                              # back to no rotation
+    assert img.text("/boot/firmware/cmdline.txt").split() == cmdline.split()

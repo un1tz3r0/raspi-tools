@@ -47,7 +47,9 @@ files (`run`), which can describe files, patches, conditionals and, as a last
 resort, a script to run inside the booted image. The YAML format is meant for
 translating the setup scripts that HAT/hardware vendors supply; see
 [docs/RECIPE-FORMAT.md](docs/RECIPE-FORMAT.md), which includes a translation
-table. The old `raspi-img-pitft` is now `piimg/recipes/pitft.yaml`; the old
+table. Bundled recipe files (`piimg recipes`): `pitft` (Adafruit PiTFT) and
+`waveshare-35dsi` (Waveshare 3.5inch DSI LCD (H); it downloads Waveshare's
+overlay, checked by SHA-256). The old `raspi-img-pitft` is now `piimg/recipes/pitft.yaml`; the old
 `raspi-img-shell` is `piimg shell`, and `raspi-img-grow` is `piimg resize` (which
 also grows the partition and filesystem, and works on overlays).
 
@@ -173,6 +175,31 @@ panes (and the editor's menu bar); Up/Down between the fields of a form or the
 rows of a list (in a multi-line box they move the cursor and leave the box at
 its first / last line); Left/Right between buttons; Esc goes back. Ctrl+arrows
 are taken for pane switching, so they do not jump words inside text boxes.
+
+### Editors
+
+Some entries in the list are marked *editor*: users, system, services, wifi,
+config-txt, cmdline, images and (with an overlay) changes. They stand in for
+the commands that list and change those things one at a time (the table under
+[Desktop interface](#desktop-interface-piimg-gui) says what each one covers). Enter opens one: it
+reads the target, shows the items in a table with the highlighted one's
+details and a form below, and marks every change (`●` changed, `+` new, `−`
+to remove). Nothing is written until you commit: all the changes then run as
+one recipe (`piimg run`) in the run dialog. config-txt is a text box instead
+of a table. Leaving an editor, or quitting, with changes asks whether to
+commit them, discard them or keep editing.
+
+| key | in an editor |
+|---|---|
+| Space | change the highlighted item's value (next state, on/off) |
+| Enter | edit it in the form below; Esc returns to the list |
+| `a` / Insert, `d` / Delete | add an item; remove one (again: keep it) |
+| Alt+Up / Alt+Down | move it (wifi priority, cmdline order) |
+| `u`, `U` | revert the item, revert everything |
+| `x` | the item's action (show a unit file, verify an image) |
+| `/`, `f` | filter by text; next view (e.g. enabled, masked, changed) |
+| Ctrl+S, F5 | commit the changes (asks first); preview them as a dry run |
+| Ctrl+R | read the target again |
 
 ### Recipe editor
 

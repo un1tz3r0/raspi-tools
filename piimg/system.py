@@ -1348,7 +1348,11 @@ def diagnose(img, scan=5000):
             "(vc4-kms-v3d); set a mode with video=HDMI-A-1:1280x720@60 in cmdline.txt instead")
     if not kms and img.exists("/etc/lightdm/lightdm.conf"):
         add("warn", "display driver", "no vc4-kms-v3d overlay: the Wayland desktop (labwc) needs KMS")
-    tft = [o for o in overlays if re.match(r"(pitft|waveshare|tft|ili9|st7)", o)]
+    dsi = [o for o in overlays if "dsi" in o.lower()]
+    if dsi:
+        add("info" if kms else "warn", "DSI display",
+            ", ".join(dsi) + ("" if kms else ": DSI panels need the KMS driver (dtoverlay=vc4-kms-v3d)"))
+    tft = [o for o in overlays if re.match(r"(pitft|waveshare|tft|ili9|st7)", o) and o not in dsi]
     if tft:
         fbcon = [w for w in words if w.startswith("fbcon=")]
         add("info", "SPI display", f"{', '.join(tft)}; console on it: {' '.join(fbcon) or 'no (fbcon=map not set)'}")

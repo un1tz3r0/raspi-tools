@@ -242,8 +242,10 @@ the image (`userconf-pi` 0.19, `piwiz` 1.8, cloud-init's Pi OS distro class):
   the overlay's diff, committed with `commit`). Secrets stay out of the
   recipe where they can: passwords are hashed in the GUI; a new wifi
   network's password is in the recipe (as NetworkManager stores it), which
-  is written mode 0600 and deleted after the run. Only the GUI draws them so
-  far; the TUI still lists the plain commands.
+  is written mode 0600 and deleted after the run. Both front ends draw them:
+  the GUI as pages (`gui/editor.py`), the TUI as screens (`tui/editor.py`: a
+  table with change marks over a form for the highlighted item, or a text
+  box), with the same guard on leaving or quitting with changes.
 - GUI tests (`tests/test_gui.py`) run `tests/gui_driver.py` under
   `mutter --headless`; broadway does not tick libadwaita's dialog animations
   without a browser attached. Set `PIIMG_TEST_IMAGE` to an image to run the

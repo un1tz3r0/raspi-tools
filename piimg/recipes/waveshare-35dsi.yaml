@@ -1,0 +1,63 @@
+# Waveshare 3.5inch DSI LCD (H): 480x800 IPS on the DSI connector, 5-point
+# capacitive touch (Goodix GT911 on the DSI connector's I2C bus).
+# https://www.waveshare.com/wiki/3.5inch_DSI_LCD_(H)
+#
+# The wiki's Bookworm/Trixie setup is: copy Waveshare_35DSI.dtbo into the
+# overlays folder, then add `dtoverlay=vc4-kms-v3d` and
+# `dtoverlay=waveshare_35DSI,35H,dsi1` to config.txt. The kernel ships no
+# overlay for this panel. Waveshare's overlay is vc4-kms-dsi-generic with the
+# 35H timings built in, plus the touch controller, which no stock overlay
+# puts on that bus without interrupt/reset GPIOs. So this recipe downloads it
+# (checked by SHA-256, then cached). Waveshare's `dsi1` word is left out: the
+# overlay has no such parameter, and DSI1 is its default anyway.
+#
+# The wiki lists Pi 5, CM5, 4B, CM4, 3B+, 3A+, 3B, CM3(+), 2B, B+ and A+;
+# not the Zeros. No driver to build and no packages on Bookworm/Trixie.
+# NOT verified on real hardware yet.
+name: Waveshare 3.5inch DSI LCD (H)
+vars:
+  port:
+    default: dsi1
+    choices: [dsi1, dsi0]
+    help: >-
+      dsi1 = the DSI connector of a Pi 4 and older, CAM/DISP 1 on a Pi 5;
+      dsi0 = CAM/DISP 0 on a Pi 5, or a Compute Module's DSI0
+  rotation:
+    default: 0
+    choices: [0, 90, 180, 270]
+    help: >-
+      text console rotation (video= on the kernel command line). The desktop is
+      rotated on the Pi in Control Centre > Screens, which also turns the touch
+  dtbo_url:
+    default: https://files.waveshare.com/wiki/common/Waveshare_35DSI.dtbo
+    help: where to get Waveshare's overlay (a file:// URL works for a local copy)
+  dtbo_sha256:
+    default: ae09deaccceb80ced72519977fedc6d7becbd548a3043538c147ad40633b4611
+    help: >-
+      SHA-256 of the overlay (as downloaded 2026-11-14). If Waveshare updates
+      the file the download step fails; check the new file and pass its checksum
+
+steps:
+  - name: Waveshare's overlay
+    download:
+      url: "{{dtbo_url}}"
+      sha256: "{{dtbo_sha256}}"
+      dest: "{{boot}}/overlays/waveshare_35DSI.dtbo"
+
+  # Run again with other settings: drop this recipe's earlier lines first.
+  - name: forget an earlier setting
+    sub: {path: "{{boot}}/config.txt", pattern: '(?i)^dtoverlay=waveshare_35DSI\b.*\n?', replace: ""}
+  - name: KMS graphics and the panel
+    config_txt: {add: [dtoverlay=vc4-kms-v3d]}
+  - when: {var: {name: port, equals: dsi1}}
+    then: [{config_txt: {add: "dtoverlay=waveshare_35DSI,35H"}}]
+    else: [{config_txt: {add: "dtoverlay=waveshare_35DSI,35H,dsi0"}}]
+
+  # Console rotation. The connector is DSI-1 on a Pi 4 and older and usually
+  # DSI-2 on a Pi 5 (it has two DSI ports), so both names are given; a
+  # video= for a connector that does not exist is ignored.
+  - name: forget an earlier rotation
+    sub: {path: "{{boot}}/cmdline.txt", pattern: '\s*video=DSI-[12]:480x800e,rotate=\d+', replace: ""}
+  - when: {var: {name: rotation, in: [90, 180, 270]}}
+    then:
+      - cmdline: {add: ["video=DSI-1:480x800e,rotate={{rotation}}", "video=DSI-2:480x800e,rotate={{rotation}}"]}

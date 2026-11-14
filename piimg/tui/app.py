@@ -21,9 +21,11 @@ from textual.widgets.option_list import Option
 
 from ..disks import is_block_device
 from ..frontend import commands as C
+from ..frontend import editors as E
 from ..frontend import target as T
 from ..frontend import proc as P
 from ..frontend.target import describe_target
+from . import editor as ED
 from . import run as R
 from . import widgets as W
 from .recipe_editor import EDITOR_CSS
@@ -254,7 +256,8 @@ class MainScreen(Screen):
                 ol.add_option(Option(Text(group, "bold underline"), disabled=True))
                 self.shown_cmds.append(None)
             ol.add_option(Option(Text.assemble(("  " + c.name, "bold"),
-                                               (" …" if c.has_form() else "", "dim"))))
+                                               (" …" if c.has_form() else "", "dim"),
+                                               ("  editor" if ED.is_editor(c) else "", "dim cyan"))))
             self.shown_cmds.append(c)
         first = next((i for i, c in enumerate(self.shown_cmds) if c), None)
         if first is not None:
@@ -289,6 +292,10 @@ class MainScreen(Screen):
         c = self.shown_cmds[event.option_index] if event.option_index < len(self.shown_cmds) else None
         if c is None:
             return
+        if ED.is_editor(c):
+            self.query_one("#cmd-help", Static).update(ED.editor_help(c))
+            self.query_one(StatusLine).say(f"{c.name}: {c.summary()} — Enter to open the editor")
+            return
         help_ = C.command_help(c)
         self.query_one("#cmd-help", Static).update(help_)
         self.query_one(StatusLine).say(f"{c.name}: {c.summary()} — Enter to "
@@ -318,7 +325,7 @@ class MainScreen(Screen):
 
 class PiImgApp(App):
     TITLE = "piimg"
-    CSS = W.CSS + R.CSS + EDITOR_CSS + """
+    CSS = W.CSS + R.CSS + EDITOR_CSS + ED.CSS + """
 #target { height: 1; padding: 0 1; }
 #main { height: 1fr; }
 #left { width: 34; border-right: solid $primary-darken-2; }
@@ -337,7 +344,10 @@ class PiImgApp(App):
     def __init__(self, target=None, overlay=None):
         super().__init__()
         self.target, self.overlay = target, overlay
-        self.cmds = C.load_commands()
+        self.all_cmds = C.load_commands()
+        self.editors = E.make_editors()
+        self.cmds = E.list_entries(self.all_cmds, self.editors)   # editors in place of what they replace
+        self.stale_editors = set()   # read again when opened (the target changed or was written)
         self.last_values = {}
         self.main = None
 
@@ -376,6 +386,7 @@ class PiImgApp(App):
                 return
         self.target, self.overlay = path, overlay
         self.sub_title = os.path.basename(path)
+        self.editors_stale()
         if self.main is None:
             while isinstance(self.screen, OpenScreen):
                 self.pop_screen()
@@ -406,7 +417,34 @@ class PiImgApp(App):
 
     # ---- running a command
 
+    def action_quit(self):
+        """Quit; an editor with changes asks first (commit, discard or keep editing)."""
+        if isinstance(self.screen, ED.EditorScreen) and self.screen.ed.dirty:
+            self.screen.leave(then=self.exit)
+            return
+        self.exit()
+
+    def editors_stale(self):
+        self.stale_editors = {e.name for e in self.editors}
+
+    def command_for(self, argv):
+        """The Command an argv runs (the longest match of its words)."""
+        best = None
+        for c in self.all_cmds:
+            if list(c.words) == argv[:len(c.words)] and (best is None or len(c.words) > len(best.words)):
+                best = c
+        return best
+
+    def run_argv(self, argv, title, done=None, cmd=None):
+        """Run a command line an editor made (a commit, a preview, a row action) in the run dialog."""
+        cmd = cmd or self.command_for(argv)
+        self.workers.cancel_group(self, "info")   # it may hold the image open read-only
+        self.push_screen(R.RunScreen(title, argv, None, cmd.meta.output, cmd.meta.abort), done)
+
     def start_command(self, cmd):
+        if ED.is_editor(cmd):
+            self.push_screen(ED.EditorScreen(cmd))
+            return
         target = self.work_path if cmd.meta.target else None
         if cmd.has_form():
             self.push_screen(ParamsScreen(cmd, target, self.last_values.get(cmd.name)),
@@ -445,10 +483,12 @@ class PiImgApp(App):
                 input(f"\n[exit status {rc}] Press Enter to return to piimg ")
             if writes:
                 self.load_info()
+                self.editors_stale()
             return
         def done(rc):
             if writes and rc == 0:
                 self.load_info()
+                self.editors_stale()
         self.push_screen(R.RunScreen(f"piimg {cmd.name}", argv, stdin, cmd.meta.output, cmd.meta.abort), done)
 
     def open_recipe_editor(self, path=None):

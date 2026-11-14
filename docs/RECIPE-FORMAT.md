@@ -9,7 +9,8 @@ A recipe is a YAML file describing changes to an image. Run one with
 
 `--dry-run` opens the image read-only, evaluates every condition and prints
 what each step would do. Examples: `piimg/recipes/pitft.yaml` (small, uses
-variables and branches) and `examples/demo/recipe.yaml` (every kind of step).
+variables and branches), `piimg/recipes/waveshare-35dsi.yaml` (a vendor's
+wiki setup, with `download`) and `examples/demo/recipe.yaml` (every kind of step).
 
 ## Shape
 
@@ -66,6 +67,7 @@ All paths are paths inside the image.
 | `mkdir` | `PATH` or `{path, mode, owner}` |
 | `write` | `{path, content \| content_file, mode, owner, if_exists: overwrite\|skip\|error, template: bool}`. `content` is literal (no `{{ }}` replacement) unless `template: true`, so shell scripts are safe. `content_file` is relative to the recipe file |
 | `copy` | `{src, dest, mode, owner}`: a file, or a whole directory's contents (modes and symlinks kept). `src` is relative to the recipe file |
+| `download` | `{url, dest, sha256, mode, owner}`: fetches `url` on this computer (not in the image) and writes it to `dest`. With `sha256` a changed file fails the step, and the file is kept in `~/.cache/piimg/downloads` so later runs work offline. A dry run fetches nothing. `file://` URLs work |
 | `symlink` | `{path, target}` (replaces an existing link) |
 | `remove` | `PATH` (recursive) |
 | `chmod` / `chown` | `{path, mode}` / `{path, owner: "user:group"}`. Names are resolved from the *image's* passwd/group: a user that only cloud-init creates at first boot does not exist yet, so use numbers (e.g. `1000:1000`) |
@@ -135,6 +137,7 @@ Walk the script top to bottom and replace each idiom:
 | `sed -i 's/$/ foo=1/' /boot/cmdline.txt` | `cmdline: {add: foo=1}` |
 | `echo i2c-dev >> /etc/modules` | `modules: [i2c-dev]` |
 | `cat > /etc/foo <<EOF ... EOF`, `cp`, `install -m` | `write` / `copy` |
+| `wget URL -O /boot/overlays/x.dtbo`, `curl -o` | `download` with the file's `sha256` |
 | `ln -s`, `chmod`, `chown`, `mkdir -p`, `rm -rf` | `symlink`, `chmod`, `chown`, `mkdir`, `remove` |
 | `sed -i 's/a/b/' file`, `grep -q x file \|\| echo x >> file` | `sub`, `line` |
 | `systemctl enable foo` | `systemd: {enable: [foo.service]}` |

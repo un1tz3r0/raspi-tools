@@ -52,6 +52,39 @@ def find_recipe(name_or_path):
     raise RecipeError(f"No recipe file or bundled recipe named {name_or_path!r}")
 
 
+def download_cache(url, sha256=None):
+    """Where `download` keeps a file: by its checksum when there is one, else by its URL."""
+    import hashlib
+    from .config import cache_dir
+    key = sha256 or "url-" + hashlib.sha256(url.encode()).hexdigest()
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", url.rstrip("/").rsplit("/", 1)[-1])[:80] or "file"
+    return cache_dir() / "downloads" / key / name
+
+
+def fetch(url, sha256=None, cached=None):
+    """The bytes at `url`, checked against `sha256`. A file whose checksum is
+    known is read from the cache when it is there; without a checksum the URL
+    is always fetched again."""
+    import hashlib
+    from .catalog import _open
+    cached = cached or download_cache(url, sha256)
+    if sha256 and cached.is_file():
+        data = cached.read_bytes()
+        if hashlib.sha256(data).hexdigest() == sha256:
+            return data
+    with _open(url, timeout=60) as r:
+        data = r.read()
+    got = hashlib.sha256(data).hexdigest()
+    if sha256 and got != sha256:
+        raise RecipeError(f"{url}: SHA-256 is {got}, the recipe expects {sha256}. The file has changed "
+                          f"since the recipe was written; check it, then pass the new checksum")
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cached.with_name(cached.name + ".part")
+    tmp.write_bytes(data)
+    tmp.replace(cached)
+    return data
+
+
 def parse_mode(m):
     """File mode. Ints are taken as given (YAML reads 0755 as octal); strings
     are octal ('0755', '755', '0o755'). Quote modes in YAML to be safe."""
@@ -295,6 +328,27 @@ class Runner:
                 elif self._mut(f"copy {f.relative_to(src)} -> {target}"):
                     uid, gid = self._own(arg)
                     self.img.write(target, f.read_bytes(), mode=stat.S_IMODE(f.stat().st_mode), uid=uid, gid=gid)
+
+    def op_download(self, arg, where):
+        """Fetch a file on the host (not in the image) and write it into the image.
+
+        With sha256, a mismatch fails the step and the file is cached in
+        ~/.cache/piimg/downloads, so later runs need no network."""
+        url, dest = arg["url"], arg["dest"]
+        want = str(arg.get("sha256") or "").strip().lower() or None
+        if want and not re.fullmatch(r"[0-9a-f]{64}", want):
+            raise RecipeError(f"{where}: sha256 must be 64 hex digits, got {want!r}")
+        mode = parse_mode(arg.get("mode", 0o644))
+        cached = download_cache(url, want)
+        if self.dry:
+            note = "cached" if cached.is_file() else "not fetched in a dry run"
+            self.log(f"  - download {url} -> {dest} ({note})")
+            return
+        data = fetch(url, want, cached)
+        if self._mut(f"download {url} -> {dest} ({len(data)} bytes"
+                     f"{', sha256 checked' if want else ', no sha256 given'})"):
+            uid, gid = self._own(arg)
+            self.img.write(dest, data, mode=mode, uid=uid, gid=gid)
 
     def op_symlink(self, arg, where):
         if self._mut(f"symlink {arg['path']} -> {arg['target']}"):
