@@ -102,21 +102,46 @@ ACTIONS = {a.name: a for a in [
            [Field("add", "list", help="lines to add, e.g. dtoverlay=vc4-kms-v3d"),
             Field("remove", "list", help="exact lines to remove"),
             Field("set", "map", help="key=value settings, e.g. hdmi_force_hotplug=1"),
-            Field("section", help="section for add: all (default), pi4, pi5, cm4, ...")],
+            Field("section", help="section for add: all (default), pi4, pi5, cm4, ..."),
+            Field("content", "text", help="the whole file: replaces config.txt first (then add/remove/set)")],
            category="Boot & hardware", example="config_txt: {add: [dtoverlay=dwc2], section: all}"),
     Action("cmdline", "edit the kernel command line", "Adds or removes parameters in cmdline.txt. A "
-           "trailing = in remove removes every value of that parameter (console= removes all consoles).",
-           [Field("add", "list", help="parameters to add"), Field("remove", "list", help="parameters to remove")],
+           "trailing = in remove removes every value of that parameter (console= removes all consoles). "
+           "set replaces the whole line first.",
+           [Field("add", "list", help="parameters to add"), Field("remove", "list", help="parameters to remove"),
+            Field("set", "str", help="the whole command line (replaces it before add/remove)")],
            category="Boot & hardware", example="cmdline: {add: [modules-load=dwc2]}"),
     Action("modules", "load kernel modules at boot", "Adds module names to "
            "/etc/modules-load.d/piimg.conf.",
            [Field("add", "list", True, "module names, e.g. i2c-dev")], scalar="add", listform="add",
            category="Boot & hardware", example="modules: [i2c-dev]"),
-    Action("systemd", "enable, disable or mask units", "Creates or removes the symlinks systemctl would. "
-           "No running systemd needed.",
+    Action("systemd", "enable, disable, mask or unmask units", "Creates or removes the symlinks systemctl "
+           "would. No running systemd needed. Applied in the order unmask, disable, mask, enable.",
            [Field("enable", "list", help="units to enable"), Field("disable", "list", help="units to disable"),
-            Field("mask", "list", help="units to mask")],
+            Field("mask", "list", help="units to mask"), Field("unmask", "list", help="units to unmask")],
            category="System", example="systemd: {enable: [ssh.service]}"),
+    Action("user", "change an account", "Changes an existing account: a new password (as a crypt "
+           "hash: `openssl passwd -6`), lock or unlock it, its login shell, ssh keys, its name; or "
+           "deletes it. Create accounts with the first_boot or userdata recipes.",
+           [Field("name", "str", True, "the account"),
+            Field("password_hash", "str", help="new password, hashed ($6$... or $y$...)"),
+            Field("lock", "bool", help="lock the password (key logins still work)"),
+            Field("unlock", "bool", help="unlock a locked password"),
+            Field("shell", "str", help="login shell, e.g. /bin/bash"),
+            Field("add_keys", "list", help="ssh public keys to authorize"),
+            Field("remove_keys", "list", help="ssh public keys to take out (whole lines)"),
+            Field("rename", "str", help="new name (home, groups and sudoers follow)"),
+            Field("delete", "bool", help="delete the account"),
+            Field("remove_home", "bool", help="with delete: also its home folder (default true)")],
+           scalar="name", category="System", example="user: {name: pi, shell: /bin/bash, add_keys: [ssh-ed25519 AAAA...]}"),
+    Action("wifi", "wifi profiles", "NetworkManager profiles: add networks (written like `piimg wifi`), "
+           "remove profiles by name, change a profile's priority (higher is tried first) or autoconnect, "
+           "and set the wifi country.",
+           [Field("add", "yaml", help="list of {ssid, password, hidden, priority}"),
+            Field("remove", "list", help="profile names to delete"),
+            Field("set", "yaml", help="{profile name: {priority: N, autoconnect: true/false}}"),
+            Field("country", "str", help="two-letter wifi country, e.g. GB")],
+           category="System", example="wifi: {add: [{ssid: home, password: secret123}], country: GB}"),
     Action("raspi_config", "raspi-config settings", "raspi-config nonint calls translated to offline "
            "edits. 0 = enable, 1 = disable, as in raspi-config. Supported: do_i2c do_spi do_ssh "
            "do_serial_hw do_serial_cons do_onewire do_hostname NAME do_boot_behaviour B1..B4 "

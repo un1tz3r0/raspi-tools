@@ -4,8 +4,9 @@
     piimg config images_dir ~/Images     set one
     piimg config --unset images_dir      back to the default
 
-Under sudo, the invoking user's file is used, so `sudo piimg ...` sees the
-same settings (and image folder) as plain `piimg`.
+Under sudo (or pkexec, as the GUI uses for cards), the invoking user's file is
+used, so `sudo piimg ...` sees the same settings (and image folder) as plain
+`piimg`.
 """
 import os
 import pwd
@@ -24,15 +25,36 @@ SETTINGS = {
 }
 
 
-def user_home():
-    """The home of the user piimg works for: under sudo, the invoking user's."""
-    sudo_user = os.environ.get("SUDO_USER")
-    if os.geteuid() == 0 and sudo_user:
+def invoking_user():
+    """When running as root for someone through sudo or pkexec: their
+    pwd entry (pw_uid, pw_gid, pw_dir, ...). Otherwise None."""
+    if os.geteuid() != 0:
+        return None
+    try:
+        if os.environ.get("SUDO_USER"):
+            return pwd.getpwnam(os.environ["SUDO_USER"])
+        for var in ("SUDO_UID", "PKEXEC_UID"):
+            if os.environ.get(var, "").isdigit():
+                return pwd.getpwuid(int(os.environ[var]))
+    except KeyError:
+        pass
+    return None
+
+
+def give_to_user(path):
+    """Under sudo or pkexec, make a file piimg created for the user theirs."""
+    who = invoking_user()
+    if who:
         try:
-            return Path(pwd.getpwnam(sudo_user).pw_dir)
-        except KeyError:
+            os.chown(path, who.pw_uid, who.pw_gid)
+        except OSError:
             pass
-    return Path.home()
+
+
+def user_home():
+    """The home of the user piimg works for: under sudo or pkexec, the invoking user's."""
+    who = invoking_user()
+    return Path(who.pw_dir) if who else Path.home()
 
 
 def _xdg(var, fallback):
@@ -84,10 +106,10 @@ def save(values):
     tmp = p.with_name(p.name + ".part")
     tmp.write_text("\n".join(lines) + "\n")
     tmp.replace(p)
-    if os.geteuid() == 0 and os.environ.get("SUDO_UID"):  # keep it the user's file
-        uid, gid = int(os.environ["SUDO_UID"]), int(os.environ.get("SUDO_GID", os.environ["SUDO_UID"]))
+    who = invoking_user()
+    if who:  # keep it the user's file
         for path in (p, p.parent):
-            os.chown(path, uid, gid)
+            os.chown(path, who.pw_uid, who.pw_gid)
 
 
 def set_value(key, value):

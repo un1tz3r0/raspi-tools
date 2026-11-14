@@ -7,8 +7,8 @@ import pytest
 from piimg import output, progress, recipe_schema as RS
 from piimg.cli import iter_commands
 from piimg.script import Runner
-from piimg.tui import commands as C
-from piimg.tui import recipe_editor as E
+from piimg.frontend import commands as C
+from piimg.frontend import recipe as E
 
 
 # ------------------------------------------------------------ recipe schema

@@ -121,6 +121,11 @@ sudo .venv/bin/piimg logs /dev/sdc -p err             # errors from the last boo
 sudo .venv/bin/piimg logs /dev/sdc --boot -1 -u lightdm
 sudo .venv/bin/piimg autostart /dev/sdc               # everything that starts by itself: services, autologin, kiosk
 sudo .venv/bin/piimg service /dev/sdc disable kiosk   # (or mask / enable / unmask / show)
+sudo .venv/bin/piimg services /dev/sdc --all          # every unit: enabled, disabled, static, masked
+sudo .venv/bin/piimg settings /dev/sdc                # hostname, boot mode, ssh, I2C/SPI/serial, locale, ... (as raspi-config shows them)
+sudo .venv/bin/piimg users /dev/sdc --keys            # with the authorized ssh keys themselves
+sudo .venv/bin/piimg ssh-key /dev/sdc pi --remove --key "ssh-ed25519 AAAA... old@laptop"
+sudo .venv/bin/piimg wifi /dev/sdc oldnet --remove    # delete a NetworkManager profile
 sudo .venv/bin/piimg boot-mode /dev/sdc console       # console | console-autologin | desktop | desktop-autologin
 sudo .venv/bin/piimg config-txt /dev/sdc --set hdmi_force_hotplug=1
 sudo .venv/bin/piimg cmdline /dev/sdc --add video=HDMI-A-1:1280x720@60 --remove quiet
@@ -193,3 +198,91 @@ steps you don't touch are kept when saving.
 Rows with problems (unknown action, missing required field, undeclared
 `{{variable}}`) get a ⚠; after a failed run the failing step gets a ✘ and the
 cursor jumps to it.
+
+## Desktop interface (`piimg gui`)
+
+```
+uv run piimg gui                                  # pick a card or image
+uv run piimg gui work.qcow2                       # open an image or overlay
+uv run piimg gui /dev/sdc fix.qcow2               # card read-only, changes go to fix.qcow2
+uv run piimg gui --recipe my.yaml                 # only the recipe editor
+uv run piimg gui --install-desktop                # add it to the app launcher
+```
+
+The same as the TUI, with GTK 4 and libadwaita (needs `python3-gi
+gir1.2-adw-1 gir1.2-gtksource-5 gir1.2-vte-3.91`). The sidebar lists every
+command, grouped and filterable (Ctrl+F); the main pane shows the selected
+command's help, its options as a form, and a summary of the target. Enter or
+a double-click in the list moves to the form; the line under it explains the
+focused field, and required fields are marked until filled. What you type in a
+form is kept when you switch commands (except passwords). Run (Ctrl+Return)
+runs the command with those options. Risky commands
+ask first (`burn` makes you type the device name). The run dialog shows a
+progress bar per slow step, the output as a log or a table (select a row for
+its details), and Stop: SIGINT, then SIGTERM, then SIGKILL. `shell` and `edit`
+run in a terminal inside the window.
+
+**Editors.** Some entries in the list (marked "editor") are pages for
+changing a set of things rather than single commands. Selecting one reads
+the current state; change what you want (the undo button on a row puts it
+back, Revert puts everything back), then **Commit**: it lists the changes,
+asks, and makes them all in one run (as a recipe, `piimg run`), then reads
+again. **Preview** runs the same changes as a dry run. While there are
+uncommitted changes the entry says "changed", and leaving it (another
+command, another target, closing the window) asks whether to commit,
+discard or keep editing.
+
+| Editor | Stands in for | What you can change |
+|---|---|---|
+| users | `users`, `passwd`, `ssh-key` | per account (expand it): new password (hashed before it leaves the GUI), locked, shell, name, authorized keys (one per line); delete an account |
+| system | `hostname`, `boot-mode`, `settings` | hostname, boot mode, wifi country, ssh, I2C, SPI, serial port and console, 1-Wire, locale, time zone, keyboard (raspi-config's offline translations) |
+| services | `services`, `service` | each unit's state: enabled, disabled, masked, unmasked |
+| wifi | `wifi` | add networks, remove profiles, connect automatically, and the order the Pi tries them in (the arrows; it sets their priorities) |
+| config-txt | `config-txt` | the whole file, in a text editor |
+| cmdline | `cmdline` | the kernel parameters: edit, add, remove, reorder |
+| images | `images local`, `images delete` | your images folder: delete images (Verify checks one); needs no target |
+| changes | `diff`, `commit` | nothing: it lists what the open overlay changes, and Commit writes it into the base image or card (asks first). Only with an overlay |
+
+piimg's own settings (`piimg config`) are under Preferences in the main menu
+(Ctrl+,).
+
+**Root.** Run `piimg gui` as yourself, not with sudo. Image files and overlays
+never need root. When a command must open a card you cannot open, it runs
+through `pkexec` and polkit asks for your password (each time; polkit does not
+remember it for a plain `pkexec`). Reading the summary of such a card waits
+for you to press Read. Overlays on a card (`gui /dev/sdc fix.qcow2`) are
+created as root but stay your files; after that, commands only read the card,
+so they still need root, but `commit` is the only one that writes it.
+
+Keys: Ctrl+O open, Ctrl+F filter, Ctrl+Return run the selected command (or
+commit an editor's changes),
+Ctrl+R read the target again, Ctrl+E recipe editor, Ctrl+?
+all shortcuts, Ctrl+Q quit.
+
+### Recipe editor (GUI)
+
+Ctrl+E in the main window, or `piimg gui --recipe FILE | BUNDLED-NAME`. Each
+recipe opens in its own window, with its own file, undo history and unsaved
+state; several can be open at once. Steps are on the left, the selected
+step's form on the right (applied as you type). Click, Ctrl+click and
+Shift+click (or Shift+arrows) select steps; list operations work on the
+selected steps, and insert and paste put new steps after the last one
+clicked (at the start of a `then:`/`else:` branch when that row is selected).
+
+| key | |
+|---|---|
+| Ctrl+I / Insert | insert a step (the dialog lists every action with its help; type to filter) |
+| Delete | delete the selected steps |
+| Alt+Up / Alt+Down | move them within their block |
+| Ctrl+D | duplicate them |
+| Ctrl+C / Ctrl+X / Ctrl+V | copy / cut / paste steps (in the step list) |
+| Ctrl+Z / Ctrl+Shift+Z | undo / redo (in the step list; the toolbar buttons work anywhere) |
+| Escape | select only one step again |
+| F2 | edit the step (or, on the first row, the whole recipe) as YAML |
+| F7 | check: go to the first problem |
+| Ctrl+S / Ctrl+Shift+S | save / save as |
+| F5 | run or dry-run, by default on the main window's target |
+| Ctrl+W | close (asks to save unsaved changes) |
+
+Rows with problems get a ⚠ and a tooltip; after a failed run the failing step
+gets a ✘ and is selected.

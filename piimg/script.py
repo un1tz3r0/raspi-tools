@@ -345,6 +345,10 @@ class Runner:
 
     def op_config_txt(self, arg, where):
         section = arg.get("section", "all")
+        if arg.get("content") is not None:
+            text = str(arg["content"])
+            if self._mut(f"config.txt: replaced ({len(text.splitlines())} lines)"):
+                self.img.write(self.img.config_txt, text if text.endswith("\n") else text + "\n")
         for l in ([arg["add"]] if isinstance(arg.get("add"), str) else arg.get("add", [])):
             if self._mut(f"config.txt [{section}] += {l}"):
                 self.img.config_txt_add(l, section)
@@ -357,6 +361,12 @@ class Runner:
                 self.img.config_var(k, v)
 
     def op_cmdline(self, arg, where):
+        if arg.get("set") is not None:
+            line = " ".join(str(arg["set"]).split())
+            if not line:
+                raise RecipeError(f"{where}: cmdline set is empty (the Pi would not boot)")
+            if self._mut(f"cmdline = {line}"):
+                self.img.write(self.img.cmdline_txt, line + "\n")
         for p in ([arg["add"]] if isinstance(arg.get("add"), str) else arg.get("add", [])):
             if self._mut(f"cmdline += {p}"):
                 self.img.cmdline_add(p)
@@ -372,12 +382,58 @@ class Runner:
                 self.img.append_line_once("/etc/modules-load.d/piimg.conf", m)
 
     def op_systemd(self, arg, where):
-        for key, fn in (("enable", self.img.enable_unit), ("disable", self.img.disable_unit),
-                        ("mask", self.img.mask_unit)):
+        # unmask before enable, disable before mask: a unit can go from masked to enabled
+        for key, fn in (("unmask", self.img.unmask_unit), ("disable", self.img.disable_unit),
+                        ("mask", self.img.mask_unit), ("enable", self.img.enable_unit)):
             units = arg.get(key, [])
             for u in ([units] if isinstance(units, str) else units):
                 if self._mut(f"systemctl {key} {u}"):
                     fn(u)
+
+    def op_user(self, arg, where):
+        """Change an existing account: password, lock, shell, ssh keys, name; or delete it."""
+        from .system import (add_ssh_keys, delete_user, remove_ssh_keys, rename_user, set_password,
+                             set_shell)
+        name = arg["name"]
+        if arg.get("delete"):
+            if self._mut(f"user {name}: delete"):
+                delete_user(self.img, name, remove_home=bool(arg.get("remove_home", True)))
+            return
+        if arg.get("password_hash") and self._mut(f"user {name}: new password"):
+            set_password(self.img, name, pwhash=arg["password_hash"])
+        if arg.get("lock") and self._mut(f"user {name}: lock the password"):
+            set_password(self.img, name, lock=True)
+        if arg.get("unlock") and self._mut(f"user {name}: unlock the password"):
+            set_password(self.img, name, unlock=True)
+        if arg.get("shell") and self._mut(f"user {name}: shell {arg['shell']}"):
+            set_shell(self.img, name, arg["shell"])
+        remove = arg.get("remove_keys") or []
+        if remove and self._mut(f"user {name}: remove {len(remove)} ssh key(s)"):
+            remove_ssh_keys(self.img, name, remove)
+        add = arg.get("add_keys") or []
+        if add and self._mut(f"user {name}: add {len(add)} ssh key(s)"):
+            add_ssh_keys(self.img, name, add)
+        if arg.get("rename") and arg["rename"] != name and self._mut(f"user {name}: rename to {arg['rename']}"):
+            rename_user(self.img, name, arg["rename"])
+
+    def op_wifi(self, arg, where):
+        """NetworkManager wifi profiles: add, remove, change priority/autoconnect; the country."""
+        from .system import add_wifi, remove_wifi, set_profile_options, set_wifi_country
+        for name in arg.get("remove") or []:
+            if self._mut(f"wifi: remove {name}"):
+                remove_wifi(self.img, name)
+        for net in arg.get("add") or []:
+            if not isinstance(net, dict) or not net.get("ssid"):
+                raise RecipeError(f"{where}: each wifi add needs an ssid")
+            if self._mut(f"wifi: add {net['ssid']}"):
+                add_wifi(self.img, net["ssid"], net.get("password") or None, None, bool(net.get("hidden")),
+                         int(net.get("priority") or 0))
+        for name, opts in (arg.get("set") or {}).items():
+            opts = opts or {}
+            if self._mut(f"wifi: {name}: " + ", ".join(f"{k} {v}" for k, v in opts.items())):
+                set_profile_options(self.img, name, opts.get("priority"), opts.get("autoconnect"))
+        if arg.get("country") and self._mut(f"wifi country {arg['country']}"):
+            set_wifi_country(self.img, arg["country"])
 
     def op_recipe(self, arg, where):
         """Run another recipe file (bundled name or path relative to this one)."""

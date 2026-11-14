@@ -221,7 +221,7 @@ def h_diagnose(a):
 def h_users(a):
     from .system import users_table
     with _open(a, readonly=True) as img:
-        return users_table(img)
+        return users_table(img, keys=a.keys)
 
 
 def h_passwd(a):
@@ -248,20 +248,26 @@ def h_passwd(a):
 
 
 def h_ssh_key(a):
-    from .system import add_ssh_keys
+    from .system import add_ssh_keys, remove_ssh_keys
     keys = list(a.key)
     for f in a.keyfile:
         keys += [l for l in open(os.path.expanduser(f)).read().splitlines() if l.strip()]
     if not keys:
         raise PiImgError("give a public key file (e.g. ~/.ssh/id_ed25519.pub) or --key")
     with _open(a) as img:
-        return add_ssh_keys(img, a.user, keys)
+        return (remove_ssh_keys if a.remove else add_ssh_keys)(img, a.user, keys)
+
+
+def h_settings(a):
+    from .system import settings_table
+    with _open(a, readonly=True) as img:
+        return settings_table(img)
 
 
 def h_services(a):
     from .system import services_table
     with _open(a, readonly=True) as img:
-        return services_table(img)
+        return services_table(img, all_units=a.all)
 
 
 def h_service(a):
@@ -291,7 +297,12 @@ def h_hostname(a):
 
 
 def h_wifi(a):
-    from .system import add_wifi, network_table, set_wifi_country
+    from .system import add_wifi, network_table, remove_wifi, set_wifi_country
+    if a.remove:
+        if a.ssid is None:
+            raise PiImgError("--remove needs the profile's name (see `piimg wifi IMAGE`)")
+        with _open(a) as img:
+            return remove_wifi(img, a.ssid)
     if a.ssid is None:
         with _open(a, readonly=a.country is None) as img:
             if a.country:
@@ -394,6 +405,14 @@ def h_tui(a):
     return tui_main(a.image, a.overlay)
 
 
+def h_gui(a):
+    from . import gui
+    if a.install_desktop or a.uninstall_desktop:
+        print(gui.install_desktop(remove=a.uninstall_desktop))
+        return 0
+    return gui.main(a.image, a.overlay, a.recipe)
+
+
 def h_recipe_edit(a):
     from .tui import edit_recipe
     return edit_recipe(a.recipe, a.image)
@@ -409,7 +428,8 @@ def _burn_typed(a):
 def build_parser(parser_class=argparse.ArgumentParser):
     p = parser_class(prog="piimg", description="Customize, inspect and repair Raspberry Pi OS images "
                      "and SD cards, offline.",
-                     epilog="Run `piimg tui IMAGE` for the interactive interface.")
+                     epilog="Run `piimg tui IMAGE` for the interactive interface, or `piimg gui` for "
+                            "the desktop one.")
     p.add_argument("--progress", choices=progress.MODES, default=None,
                    help="how to show progress of slow steps, on stderr: auto = live bars on a terminal "
                         "and plain lines otherwise (default; env PIIMG_PROGRESS); json = for programs")
@@ -423,6 +443,19 @@ def build_parser(parser_class=argparse.ArgumentParser):
                          "go to OVERLAY (a qcow2 file, created if missing), to be committed later or not.")
     _arg(s, "image", nargs="?", kind="image", help=IMAGE_HELP)
     _arg(s, "overlay", nargs="?", kind="newfile", help="qcow2 file to write changes to, leaving IMAGE untouched")
+    s = _cmd(sub, "gui", "desktop interface (GTK 4 / libadwaita)", h_gui, tui=False,
+             description="The desktop version of `piimg tui`: run every command on one image, overlay or "
+                         "card, with forms for their options, and edit recipes in their own windows. It "
+                         "runs as you and asks for your password (polkit) when a command needs root for a "
+                         "card. Needs: sudo apt install python3-gi gir1.2-adw-1 gir1.2-gtksource-5 "
+                         "gir1.2-vte-3.91")
+    _arg(s, "image", nargs="?", kind="image", help=IMAGE_HELP)
+    _arg(s, "overlay", nargs="?", kind="newfile", help="qcow2 file to write changes to, leaving IMAGE untouched")
+    _arg(s, "--recipe", kind="recipe", help="open this recipe file (or bundled recipe's name) in the recipe "
+                                            "editor; without IMAGE, only the editor opens")
+    _arg(s, "--install-desktop", action="store_true",
+         help="add piimg to the desktop's app launcher (~/.local/share/applications) and exit")
+    _arg(s, "--uninstall-desktop", action="store_true", help="remove it from the app launcher and exit")
 
     # ---- Inspect
     s = _cmd(sub, "info", "summary: partitions, OS, hostname, boot mode, users", h_info, output="table")
@@ -436,11 +469,23 @@ def build_parser(parser_class=argparse.ArgumentParser):
     _arg(s, "--scan", type=int, default=5000, help="journal entries to read from the end (default 5000)")
     s = _cmd(sub, "users", "list accounts, their password state, ssh keys and groups", h_users, output="table")
     _image(s)
+    _arg(s, "--keys", action="store_true", help="also show the authorized ssh keys themselves")
+    s = _cmd(sub, "settings", "the raspi-config settings: hostname, boot, interfaces, locale, ...", h_settings,
+             output="table",
+             description="What raspi-config would show, read offline: hostname, boot mode, wifi country, "
+                         "ssh, I2C, SPI, serial port and console, 1-Wire, locale, time zone and keyboard. "
+                         "Change them with a recipe's raspi_config step (or the GUI's System editor).")
+    _image(s)
     s = _cmd(sub, "autostart", "list everything that starts at boot or login (services, autologin, "
              "kiosk/desktop autostart, cron, rc.local)", h_autostart, output="table")
     _image(s)
-    s = _cmd(sub, "services", "list enabled and masked systemd units", h_services, output="table")
+    s = _cmd(sub, "services", "list enabled and masked systemd units (--all: every unit)", h_services,
+             output="table",
+             description="List the systemd units that are enabled or masked. With --all, also the "
+                         "disabled ones (they have an [Install] section and could be enabled) and the "
+                         "static ones (they start only when another unit needs them).")
     _image(s)
+    _arg(s, "--all", action="store_true", help="also list disabled and static units")
     s = _cmd(sub, "logs", "show the systemd journal of a past boot", h_logs, output="log",
              description="Read the journal the Pi wrote to its card. Shows the last boot by default; "
                          "--boot -1 is the one before. Only the last --scan entries are read (about "
@@ -484,11 +529,12 @@ def build_parser(parser_class=argparse.ArgumentParser):
     _arg(sg, "--unlock", action="store_true", help="unlock a locked password")
     _arg(s, "--shell", help="also set the login shell, e.g. /bin/bash (the image's 'pi' has "
                             "/usr/sbin/nologin until first-boot setup); alone, leaves the password as it is")
-    s = _cmd(sub, "ssh-key", "authorize ssh public keys for a user", h_ssh_key, group=g, writes=True)
+    s = _cmd(sub, "ssh-key", "authorize (or remove) ssh public keys for a user", h_ssh_key, group=g, writes=True)
     _image(s)
     _arg(s, "user", kind="user", help="account name")
     _arg(s, "keyfile", nargs="*", kind="file", help="public key files, e.g. ~/.ssh/id_ed25519.pub")
     _arg(s, "--key", action="append", default=[], kind="lines", help="a public key as text (repeatable)")
+    _arg(s, "--remove", action="store_true", help="take these keys out instead of adding them")
     s = _cmd(sub, "boot-mode", "show or set console/desktop boot and autologin (raspi-config B1-B4)",
              h_boot_mode, group=g, writes=lambda a: a.mode is not None)
     _image(s)
@@ -503,8 +549,8 @@ def build_parser(parser_class=argparse.ArgumentParser):
     s = _cmd(sub, "hostname", "show or set the hostname", h_hostname, group=g, writes=lambda a: a.name is not None)
     _image(s)
     _arg(s, "name", nargs="?", help="new hostname; leave out to show it")
-    s = _cmd(sub, "wifi", "add a wifi network, set the wifi country, or list network profiles", h_wifi,
-             group=g, writes=lambda a: a.ssid is not None or a.country is not None)
+    s = _cmd(sub, "wifi", "add or remove a wifi network, set the wifi country, or list network profiles",
+             h_wifi, group=g, writes=lambda a: a.ssid is not None or a.country is not None)
     _image(s)
     _arg(s, "ssid", nargs="?", help="network name; leave out to list the profiles")
     _secret_options(s, "wifi password")
@@ -512,6 +558,7 @@ def build_parser(parser_class=argparse.ArgumentParser):
     _arg(s, "--country", help="two-letter wifi country code, e.g. GB, US, DE (Raspberry Pi OS needs one)")
     _arg(s, "--hidden", action="store_true", help="the network does not broadcast its name")
     _arg(s, "--priority", type=int, default=0, help="higher is tried first (default 0)")
+    _arg(s, "--remove", action="store_true", help="delete the profile named SSID instead of adding one")
     s = _cmd(sub, "config-txt", "show or change config.txt (display, overlays, hardware)", h_config_txt,
              group=g, writes=lambda a: bool(a.add or a.remove or a.set), output="text")
     _image(s)
@@ -684,7 +731,7 @@ def iter_commands(parser=None):
 def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
-        if args.cmd == "tui" or args.cmd == "recipe-edit":
+        if args.cmd in ("tui", "gui", "recipe-edit"):
             return args.func(args) or 0
         with progress.session(args.progress):
             output.emit(args.func(args), as_json=args.json)

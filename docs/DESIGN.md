@@ -186,8 +186,17 @@ the image (`userconf-pi` 0.19, `piwiz` 1.8, cloud-init's Pi OS distro class):
   `40-rpi-enable-watchdog.conf` arms the hardware watchdog and QEMU's raspi3b
   resets at once.
 
-## The TUI (`piimg/tui/`)
+## The front ends (`piimg/frontend/`, `piimg/tui/`, `piimg/gui/`)
 
+- `piimg/frontend/` holds everything the TUI (Textual) and the GUI (GTK 4 /
+  libadwaita) share, and imports neither toolkit: `fields.FieldDef`, the
+  command forms (`commands.py`), running a child and reading its output
+  (`proc.py`), the open target (`target.py`) and the recipe editor's model
+  (`recipe.RecipeModel`: rows, checks, marks, clipboard, undo/redo and every
+  list operation, each taking the cursor row and returning the row to show
+  next). Styled text is `rich.text.Text`; the GUI turns it into Pango markup.
+  A test checks that the front end imports no toolkit, the TUI no `gi` and
+  the GUI no `textual`.
 - Commands come from the CLI's argparse tree (`cli.iter_commands`); each
   subparser carries a `cli.Meta` (group, output layout, whether it writes,
   confirmation text, abortability) and arguments carry hints (`kind`,
@@ -203,6 +212,37 @@ the image (`userconf-pi` 0.19, `piwiz` 1.8, cloud-init's Pi OS distro class):
   every action's fields (a test checks it covers every `Runner.op_*`). Runs
   write the edited recipe to a hidden temp file next to the original so
   relative `copy`/`content_file` paths still resolve.
+- The GUI finds the distro's PyGObject the way `guest.py` finds libguestfs
+  (`sysimport.import_system`). It runs as the user. A command that must open
+  a card the user cannot open runs as
+  `pkexec env -C CWD VARS... python -m piimg.frontend.supervise python -m piimg ...`:
+  pkexec clears the environment and starts in `/`, and the user cannot signal
+  a root process, so the small supervisor passes stdin and stop requests
+  (JSON lines on its stdin) to the command. piimg finds the user's settings
+  and libguestfs appliance from `PKEXEC_UID` as from `SUDO_UID`
+  (`config.invoking_user`), and overlays and flattened images it creates as
+  root are given back to the user. Terminal commands (`shell`, `edit`) run in
+  a VTE terminal without the supervisor: the terminal stops them.
+- Editors (`frontend/editors.py`) are the read-change-commit pages: a query
+  command's table is the initial state, each item keeps its original values
+  (so the editor knows what changed and can revert), and Commit turns the
+  changes into a recipe run once with `piimg run` (one start of the image,
+  the run dialog's progress, `--dry-run` as Preview, all or nothing as far
+  as the recipe goes). An editor stands in for the commands it replaces in a
+  front end's list (`list_entries`). The GUI keeps the editor on screen
+  while it has changes: leaving it asks to commit, discard or stay. Editors:
+  users, system (raspi-config settings, read by `settings`), services, wifi,
+  config-txt (a text editor), cmdline (an ordered list), images (the images
+  folder; no target, commits with `images delete`), changes (review only:
+  the overlay's diff, committed with `commit`). Secrets stay out of the
+  recipe where they can: passwords are hashed in the GUI; a new wifi
+  network's password is in the recipe (as NetworkManager stores it), which
+  is written mode 0600 and deleted after the run. Only the GUI draws them so
+  far; the TUI still lists the plain commands.
+- GUI tests (`tests/test_gui.py`) run `tests/gui_driver.py` under
+  `mutter --headless`; broadway does not tick libadwaita's dialog animations
+  without a browser attached. Set `PIIMG_TEST_IMAGE` to an image to run the
+  scenarios that need one; it is only read.
 
 ## Findings about current images (Raspberry Pi OS trixie, 2026-10-06)
 

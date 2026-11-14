@@ -127,6 +127,8 @@ def make_overlay(base, overlay):
                         "-F", _image_format(base), str(overlay)], capture_output=True, text=True)
     if r.returncode:
         raise PiImgError(f"qemu-img create failed: {r.stderr.strip()}")
+    from .config import give_to_user
+    give_to_user(overlay)  # created as root for a card: still the user's file
     return overlay
 
 
@@ -206,6 +208,8 @@ def flatten(src, dst, fmt=None, compress=False):
         tmp.rename(dst)
     finally:
         tmp.unlink(missing_ok=True)
+    from .config import give_to_user
+    give_to_user(dst)  # a card backed up as root: still the user's file
     return dst
 
 

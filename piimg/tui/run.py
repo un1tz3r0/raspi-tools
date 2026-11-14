@@ -13,10 +13,8 @@ Ctrl-C: qemu-img is stopped, libguestfs closes the image); pressing it again
 sends SIGTERM, then SIGKILL.
 """
 import asyncio
-import json
 import os
 import signal
-import sys
 import time
 
 from rich.table import Table as RTable
@@ -28,45 +26,14 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Label, ProgressBar, RichLog, Static
 
-from ..output import STATUS_STYLES
-from ..progress import EVENT_PREFIX, fmt_duration
+from ..frontend import proc as P
+from ..frontend.proc import parse_table, piimg_command
+from ..progress import fmt_duration
 from .widgets import ButtonRow, ConfirmScreen, StatusLine
 
 
-def piimg_command(argv):
-    return [sys.executable, "-m", "piimg", "--progress=json", "--json", *argv]
-
-
-async def run_capture(argv, timeout=None):
-    """Run a piimg command quietly; returns (rc, stdout lines, stderr lines without events)."""
-    env = dict(os.environ, PYTHONUNBUFFERED="1")
-    proc = await asyncio.create_subprocess_exec(*piimg_command(argv), stdin=asyncio.subprocess.DEVNULL,
-                                                stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.PIPE, env=env)
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except BaseException:  # cancelled or timed out: don't leave it holding the image open
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-        raise
-    errs = [l for l in err.decode(errors="replace").splitlines() if not l.startswith(EVENT_PREFIX)]
-    return proc.returncode, out.decode(errors="replace").splitlines(), errs
-
-
-def parse_table(line):
-    if not line.startswith('{"table"'):
-        return None
-    try:
-        return json.loads(line)["table"]
-    except (ValueError, KeyError):
-        return None
-
-
 def styled_cell(column, value):
-    if column == "status":
-        return Text(value, STATUS_STYLES.get(value.lower(), ""))
-    return Text(value)
+    return Text(value, P.status_style(column, value))
 
 
 def rich_table(t):
@@ -102,12 +69,7 @@ class TaskRow(Vertical):
         if ev.get("total"):
             bars[0].update(total=ev["total"], progress=ev.get("completed", 0))
         self.query_one(".task-time", Label).update(Text(fmt_duration(ev.get("elapsed", 0)), "dim"))
-        detail = Text()
-        for i, (text, style) in enumerate(ev.get("parts") or []):
-            if i:
-                detail.append(" · ", "dim")
-            detail.append(text, style)
-        self.query_one(".task-detail", Label).update(detail)
+        self.query_one(".task-detail", Label).update(P.task_detail(ev))
 
 
 class RunScreen(ModalScreen[int]):
@@ -158,7 +120,7 @@ class RunScreen(ModalScreen[int]):
 
     async def _run(self):
         log = self.query_one(RichLog)
-        env = dict(os.environ, PYTHONUNBUFFERED="1", PIIMG_COLOR="1")
+        env = P.child_env({"PIIMG_COLOR": "1"})
         try:
             self.proc = await asyncio.create_subprocess_exec(
                 *piimg_command(self.argv), cwd=self.cwd,
@@ -220,14 +182,12 @@ class RunScreen(ModalScreen[int]):
             self.query_one("#row-detail", Static).update(detail)
 
     def _err(self, line):
-        if line.startswith(EVENT_PREFIX):
-            try:
-                self._event(json.loads(line[len(EVENT_PREFIX):]))
-            except ValueError:
-                pass
+        if P.is_event(line):
+            ev = P.parse_event(line)
+            if ev is not None:
+                self._event(ev)
             return
-        style = "bold red" if line.startswith("piimg: ") and "note:" not in line else "yellow"
-        self.query_one(RichLog).write(Text(line, style))
+        self.query_one(RichLog).write(Text(line, P.message_style(line)))
 
     def _event(self, ev):
         box = self.query_one("#tasks")
@@ -243,15 +203,8 @@ class RunScreen(ModalScreen[int]):
             row = self.tasks.pop(tid, None)
             if row is not None:
                 row.remove()
-            if ev.get("elapsed", 0) >= 1.5 or not ev.get("ok"):
-                ok = ev.get("ok")
-                line = Text("✔ " if ok else "✘ ", "green" if ok else "red")
-                line.append(ev["description"])
-                if ev.get("result"):
-                    line.append(f" · {ev['result']}", "dim")
-                line.append(f" · {fmt_duration(ev.get('elapsed', 0))}"
-                            + ("" if ok else (" interrupted" if ev.get("interrupted") else " failed")),
-                            "dim" if ok else "red")
+            line = P.end_line(ev)
+            if line is not None:
                 self.query_one(RichLog).write(line)
 
     def _finished(self, rc):
@@ -259,14 +212,9 @@ class RunScreen(ModalScreen[int]):
         for row in list(self.tasks.values()):
             row.remove()
         self.tasks.clear()
-        took = fmt_duration(time.monotonic() - self.started)
-        status = self.query_one("#run-status", StatusLine)
-        if rc == 0:
-            status.say(f"finished in {took}", "bold green")
-        elif rc in (130, -signal.SIGINT):
-            status.say(f"stopped after {took}", "bold yellow")
-        else:
-            status.say(f"failed after {took} (exit status {rc})", "bold red")
+        text, kind = P.finished(rc, time.monotonic() - self.started)
+        self.query_one("#run-status", StatusLine).say(
+            text, {"ok": "bold green", "stopped": "bold yellow"}.get(kind, "bold red"))
         for b in self.query("#stop"):
             b.remove()
         close = self.query_one("#close", Button)
@@ -298,13 +246,13 @@ class RunScreen(ModalScreen[int]):
         self._signal()
 
     def _signal(self):
-        sig = (signal.SIGINT, signal.SIGTERM, signal.SIGKILL)[min(self.stops, 2)]
+        sig = P.STOP_SIGNALS[min(self.stops, 2)]
         self.stops += 1
         try:
             os.killpg(self.proc.pid, sig)
         except ProcessLookupError:
             return
-        label = {0: "Stop", 1: "Terminate", 2: "Kill"}.get(self.stops, "Kill")
+        label = P.STOP_LABELS[min(self.stops, 2)]
         for b in self.query("#stop"):
             b.label = label
         self.query_one(RichLog).write(Text(f"-- sent {signal.Signals(sig).name}", "yellow"))

@@ -15,7 +15,8 @@ so most commands need no root and no emulator.
 - **Official images:** list, download and verify Raspberry Pi OS images.
 - **Image handling:** copy-on-write overlays so the base image stays
   untouched, resize, flatten, and burn to a card.
-- **TUI:** a terminal interface (`piimg tui`) for all of the above.
+- **TUI and GUI:** a terminal interface (`piimg tui`) and a GNOME desktop
+  interface (`piimg gui`) for all of the above.
 
 ## Requirements
 
@@ -27,9 +28,15 @@ sudo apt install python3-guestfs libguestfs-tools qemu-utils xz-utils
 # optional: guestfs-tools (piimg diff), qemu-system-arm (live recipe steps)
 ```
 
-The libguestfs Python bindings are not on PyPI, so they come from apt.
-`pyproject.toml` therefore makes uv build the venv on the system Python, where
-piimg finds them.
+For the desktop interface (`piimg gui`), also:
+
+```sh
+sudo apt install python3-gi gir1.2-adw-1 gir1.2-gtksource-5 gir1.2-vte-3.91
+```
+
+The libguestfs Python bindings are not on PyPI, so they come from apt, and so
+does PyGObject. `pyproject.toml` therefore makes uv build the venv on the
+system Python, where piimg finds them.
 
 On Ubuntu, a normal user can't read the kernel in `/boot`, which libguestfs
 needs. Either run `sudo chmod +r /boot/vmlinuz-*` (undone by kernel updates)
@@ -67,8 +74,10 @@ sudo .venv/bin/piimg burn work.qcow2 /dev/sdX
 sudo .venv/bin/piimg diagnose /dev/sdX
 sudo .venv/bin/piimg passwd /dev/sdX pi
 
-# or do it all interactively
+# or do it all interactively, in a terminal or on the desktop
 uv run piimg tui work.qcow2
+uv run piimg gui work.qcow2
+uv run piimg gui --install-desktop     # add piimg to the app launcher
 ```
 
 Commands that take an image also take a qcow2 overlay or a card (`/dev/sdX`,
@@ -76,8 +85,8 @@ Commands that take an image also take a qcow2 overlay or a card (`/dev/sdX`,
 
 ## Documentation
 
-- [docs/USAGE.md](docs/USAGE.md): every command, card repair, the TUI and the
-  recipe editor
+- [docs/USAGE.md](docs/USAGE.md): every command, card repair, the TUI, the GUI
+  and the recipe editor
 - [docs/RECIPE-FORMAT.md](docs/RECIPE-FORMAT.md): the YAML recipe format
 - [docs/DESIGN.md](docs/DESIGN.md): how it works, and notes on how current
   Raspberry Pi OS images boot

@@ -9,7 +9,6 @@ Without OVERLAY, commands change TARGET itself (on a card the TUI asks first).
 """
 import os
 import sys
-from pathlib import Path
 
 from rich.text import Text
 from textual import on, work
@@ -20,41 +19,15 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import (Button, Checkbox, DataTable, Footer, Header, Input, Label, OptionList, Static)
 from textual.widgets.option_list import Option
 
-from ..disks import is_block_device, list_disks
-from ..progress import fmt_size
-from . import commands as C
+from ..disks import is_block_device
+from ..frontend import commands as C
+from ..frontend import target as T
+from ..frontend import proc as P
+from ..frontend.target import describe_target
 from . import run as R
 from . import widgets as W
 from .recipe_editor import EDITOR_CSS
-from .widgets import ButtonRow, ConfirmScreen, Form, FieldDef, StatusLine
-
-NEEDS_OVERLAY = ("diff", "commit")
-
-
-def short_path(p):
-    """A path as short as it can be shown: relative to the current directory or ~."""
-    p = str(p)
-    if p.startswith("/dev/"):
-        return p
-    try:
-        rel = os.path.relpath(p)
-        if not rel.startswith(".."):
-            return rel
-    except ValueError:
-        pass
-    home = os.path.expanduser("~")
-    return "~" + p[len(home):] if p.startswith(home + "/") else p
-
-
-def describe_target(path, overlay):
-    p = short_path(path)
-    overlay = overlay and short_path(overlay)
-    if overlay:
-        return f"{p} → {overlay}  (target only read; changes go to the overlay)"
-    if is_block_device(p):
-        return f"{p}  (card: changes are written to it directly)"
-    return f"{p}  (changes are written to it)"
-
+from .widgets import ButtonRow, ConfirmScreen, Form, StatusLine
 
 # ----------------------------------------------------------------- picker
 
@@ -86,39 +59,17 @@ class OpenScreen(Screen):
         dt = self.query_one(DataTable)
         dt.clear(columns=True)
         dt.add_columns("path", "what", "size", "note")
+        found, warning = T.candidates()
+        if warning:
+            self.query_one(StatusLine).say(warning, "yellow")
         self.paths = []
-        try:
-            disks = list_disks()
-        except Exception as e:  # lsblk missing etc.: files still work
-            disks = []
-            self.query_one(StatusLine).say(f"cannot list disks: {e}", "yellow")
-        for d in disks:
-            reasons = d.why_not()
-            if reasons and not d.looks_like_pi:
-                continue  # the system disk etc.: never offered
-            access = os.access(d.path, os.R_OK | os.W_OK)
-            note = "; ".join(reasons) if reasons else ("Raspberry Pi OS card" if d.looks_like_pi else "")
-            if not access:
+        for c in found:
+            note = c.note
+            if c.root:
                 note += ("; " if note else "") + "needs root (sudo) to open"
-            dt.add_row(d.path, f"disk: {d.model or d.transport or '?'}", fmt_size(d.size), note)
-            self.paths.append(d.path)
-        from ..config import images_dir
-        folders = [Path.cwd()]
-        try:
-            if images_dir().resolve() != Path.cwd().resolve():
-                folders.append(images_dir())
-        except Exception:  # noqa: BLE001 - a broken config must not stop the picker
-            pass
-        for folder in folders:
-            files = sorted(folder.glob("*")) if folder.is_dir() else []
-            for f in files:
-                if f.suffix not in (".img", ".qcow2") or not f.exists():
-                    continue
-                size = fmt_size(f.stat().st_size)
-                name = f.name if folder == Path.cwd() else str(f)
-                note = "" if folder == Path.cwd() else "images folder"
-                dt.add_row(name, "overlay" if f.suffix == ".qcow2" else "image", size, note)
-                self.paths.append(str(f))
+            name = c.path if c.kind == "disk" or c.note else c.name
+            dt.add_row(name, c.what, c.size, note)
+            self.paths.append(c.path)
         if not self.paths:
             self.query_one(StatusLine).say("No card or image found here: type a path below.")
 
@@ -130,7 +81,7 @@ class OpenScreen(Screen):
             self._suggest_overlay(p)
 
     def _suggest_overlay(self, p):
-        name = (Path(p).name if not p.startswith("/dev/") else Path(p).name + "-card") + "-changes.qcow2"
+        name = T.suggest_overlay(p)
         ov = self.query_one("#overlay", Input)
         if not ov.value or ov.value.endswith("-changes.qcow2"):
             ov.value = name
@@ -204,30 +155,15 @@ class ParamsScreen(ModalScreen):
 
     def _refresh_vars(self):
         """For `run`: one field per variable of the chosen recipe."""
-        from ..script import find_recipe
-        import yaml
         box = self.query_one("#vars")
         box.remove_children()
-        self.var_fields = []
         self.varform = None
         form = self.query_one("#form", Form)
         name = next((form.value(f.key) for f in form.fields if f.data.get("kind") == "recipe"), "")
-        try:
-            doc = yaml.safe_load(find_recipe(name).read_text()) if name else None
-        except Exception:
-            doc = None
-        spec = (doc or {}).get("vars") or {}
-        if not spec:
-            box.mount(Static(Text("(the recipe has no variables)" if doc else
-                                  "(choose a recipe to see its variables)", "dim")))
+        self.var_fields, note = C.recipe_var_fields(name)
+        if not self.var_fields:
+            box.mount(Static(Text(note, "dim")))
             return
-        for vname, d in spec.items():
-            d = d or {}
-            self.var_fields.append(FieldDef(key=vname, label=vname, type="choice" if d.get("choices") else "str",
-                                            required=bool(d.get("required")), help=d.get("help", ""),
-                                            choices=tuple(str(c) for c in d.get("choices") or ()),
-                                            value=d.get("default"),
-                                            placeholder="" if "default" not in d else f"default: {d['default']}"))
         self.varform = Form(self.var_fields)
         box.mount(self.varform)
 
@@ -235,7 +171,7 @@ class ParamsScreen(ModalScreen):
         values = self.query_one("#form", Form).values()
         if self.var_fields:
             vf = self.varform.values()
-            values["var"] = [f"{k}={v}" for k, v in vf.items() if v not in ("", None)]
+            values["var"] = C.var_args(vf)
         return values
 
     @on(Button.Pressed, "#run")
@@ -312,13 +248,9 @@ class MainScreen(Screen):
         self.shown_cmds = []
         group = None
         has_overlay = bool(self.app.overlay)
-        for c in self.cmds:
-            if c.name in NEEDS_OVERLAY and not has_overlay:
-                continue
-            if needle and needle.lower() not in (c.name + " " + c.summary()).lower():
-                continue
-            if c.meta.group != group:
-                group = c.meta.group
+        for g, c in C.visible(self.cmds, needle, has_overlay):
+            if g != group:
+                group = g
                 ol.add_option(Option(Text(group, "bold underline"), disabled=True))
                 self.shown_cmds.append(None)
             ol.add_option(Option(Text.assemble(("  " + c.name, "bold"),
@@ -357,18 +289,7 @@ class MainScreen(Screen):
         c = self.shown_cmds[event.option_index] if event.option_index < len(self.shown_cmds) else None
         if c is None:
             return
-        help_ = Text()
-        help_.append(f"piimg {c.name}\n", "bold")
-        help_.append(c.help + "\n\n")
-        help_.append(c.usage() + "\n", "dim")
-        for a in c.field_actions():
-            name = max(a.option_strings, key=len) if a.option_strings else a.dest
-            help_.append(f"\n  {name}", "bold")
-            if a.help:
-                help_.append(f"  {a.help}", "")
-        if c.meta.writes is not False:
-            help_.append("\n\nChanges the target" + (" (depending on the options)" if callable(c.meta.writes) else "")
-                         + ".", "yellow")
+        help_ = C.command_help(c)
         self.query_one("#cmd-help", Static).update(help_)
         self.query_one(StatusLine).say(f"{c.name}: {c.summary()} — Enter to "
                                        + ("set options and run" if c.has_form() else "run"))
@@ -473,11 +394,11 @@ class PiImgApp(App):
             return
         self.main.show_info([("", "reading…")])
         try:
-            rc, out, err = await R.run_capture(["info", self.work_path], timeout=180)
+            rc, out, err = await P.run_capture(["info", self.work_path], timeout=180)
         except Exception as e:  # noqa: BLE001 - shown to the user
             self.main.show_info([], f"{e}")
             return
-        table = next((R.parse_table(l) for l in out if R.parse_table(l)), None)
+        table = P.first_table(out)
         if rc or table is None:
             self.main.show_info([], (err[-1] if err else f"exit status {rc}").removeprefix("piimg: "))
         else:
@@ -500,31 +421,17 @@ class PiImgApp(App):
             self._confirm_and_run(cmd, argv, stdin, args)
 
     def _confirm_and_run(self, cmd, argv, stdin, args):
-        messages = []
         writes = cmd.meta.writes_for(args)
-        if writes and self.direct_card and cmd.meta.target:
-            messages.append(f"This changes the card {self.target} directly (no overlay).")
-        if cmd.meta.confirm:
-            try:
-                m = cmd.meta.confirm(args)
-            except Exception as e:  # noqa: BLE001
-                m = str(e)
-            if m:
-                messages.append(m)
-        typed = None
-        if cmd.meta.typed_confirm:
-            try:
-                typed = cmd.meta.typed_confirm(args)
-            except Exception as e:  # noqa: BLE001 - e.g. no such device
-                self.notify(str(e), severity="error")
-                return
-        if typed and cmd.meta.yes_flag:
-            argv = list(cmd.words) + [cmd.meta.yes_flag] + argv[len(cmd.words):]
-        if messages or typed:
-            self.push_screen(ConfirmScreen(f"piimg {cmd.name}", messages, typed),
-                             lambda ok: ok and self._run(cmd, argv, stdin, writes))
+        try:
+            conf = C.confirmation(cmd, argv, args, self.target if self.direct_card else None)
+        except C.ArgError as e:  # e.g. no such device
+            self.notify(str(e), severity="error")
+            return
+        if conf.needed:
+            self.push_screen(ConfirmScreen(f"piimg {cmd.name}", conf.messages, conf.typed),
+                             lambda ok: ok and self._run(cmd, conf.argv, stdin, writes))
         else:
-            self._run(cmd, argv, stdin, writes)
+            self._run(cmd, conf.argv, stdin, writes)
 
     def _run(self, cmd, argv, stdin, writes):
         # the target summary may still be loading, with the image open read-only: stop it,

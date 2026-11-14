@@ -70,11 +70,13 @@ All paths are paths inside the image.
 | `chmod` / `chown` | `{path, mode}` / `{path, owner: "user:group"}`. Names are resolved from the *image's* passwd/group: a user that only cloud-init creates at first boot does not exist yet, so use numbers (e.g. `1000:1000`) |
 | `line` | `{path, line, match, state: present\|absent}`: like Ansible lineinfile. With `match`, the first matching line is replaced (else `line` is appended) |
 | `sub` | `{path, pattern, replace, count, must_match}`: regex substitution (Python syntax, multiline) |
-| `config_txt` | `{add: [..], remove: [..], set: {key: value}, section: all}`. `set` is raspi-config's `set_config_var` (rewrites commented or active `key=` lines) |
-| `cmdline` | `{add: [..], remove: [..]}` kernel parameters in `cmdline.txt`. A trailing `=` in `remove` removes any value |
+| `config_txt` | `{add: [..], remove: [..], set: {key: value}, section: all, content: "..."}`. `set` is raspi-config's `set_config_var` (rewrites commented or active `key=` lines); `content` replaces the whole file first |
+| `cmdline` | `{add: [..], remove: [..], set: "..."}` kernel parameters in `cmdline.txt`. A trailing `=` in `remove` removes any value; `set` replaces the whole line first |
 | `modules` | module name(s) to load at boot (`/etc/modules-load.d/piimg.conf`) |
-| `systemd` | `{enable: [..], disable: [..], mask: [..]}`: creates/removes the symlinks `systemctl` would, no running systemd needed |
-| `raspi_config` | list of `raspi-config nonint` calls, e.g. `["do_i2c 0", "do_hostname mypi"]`. **0 = enable, 1 = disable**, as in raspi-config. Supported: `do_i2c do_spi do_ssh do_serial_hw do_serial_cons do_onewire do_hostname do_boot_behaviour B1..B4 do_wifi_country XX` (B2/B4 autologin user: the recipe variable `autologin_user`, else the first regular user). Anything else errors and tells you to use `live` |
+| `systemd` | `{enable: [..], disable: [..], mask: [..], unmask: [..]}`: creates/removes the symlinks `systemctl` would, no running systemd needed; applied in the order unmask, disable, mask, enable |
+| `user` | `{name: pi, password_hash: $6$..., lock: true, unlock: true, shell: /bin/bash, add_keys: [..], remove_keys: [..], rename: NEW, delete: true}` changes an existing account (create the first one with `first_boot`/`userdata`). Hash a password with `openssl passwd -6`; `delete` also removes the home folder unless `remove_home: false` |
+| `wifi` | `{add: [{ssid, password, hidden, priority}], remove: [profile], set: {profile: {priority: N, autoconnect: false}}, country: GB}` NetworkManager profiles, like `piimg wifi` |
+| `raspi_config` | list of `raspi-config nonint` calls, e.g. `["do_i2c 0", "do_hostname mypi"]`. **0 = enable, 1 = disable**, as in raspi-config. Supported: `do_i2c do_spi do_ssh do_serial_hw do_serial_cons do_onewire do_hostname do_boot_behaviour B1..B4 do_wifi_country XX do_change_locale do_change_timezone do_configure_keyboard` (B2/B4 autologin user: the recipe variable `autologin_user`, else the first regular user). Anything else errors and tells you to use `live` |
 | `recipe` | another recipe file (relative path or bundled name), or `{name, vars}` |
 | `python_recipe` | a built-in Python recipe: `{name: gadget-net, args: {iface: usb0}}` |
 | `live` | boot the image and run a script as root. See below |

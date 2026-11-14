@@ -12,3 +12,5 @@ attic/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+# session transcripts (contain private details)
+.claude/logs/

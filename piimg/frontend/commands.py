@@ -1,16 +1,21 @@
-"""From the CLI's argparse definitions to TUI forms, and back to a command line.
+"""From the CLI's argparse definitions to forms, and back to a command line.
 
-The TUI never calls command code directly: it runs `python -m piimg ...` as a
-child process (see run.py), so a command behaves exactly as on the command
-line, can be stopped with SIGINT, and cannot take the TUI down with it.
+The front ends never call command code directly: they run `python -m piimg ...`
+as a child process (see proc.py), so a command behaves exactly as on the
+command line, can be stopped with SIGINT, and cannot take the interface down
+with it.
 """
 import argparse
 from dataclasses import dataclass
 
+from rich.text import Text
+
 from ..cli import GROUPS, Meta, build_parser, iter_commands
-from .widgets import FieldDef
+from .fields import FieldDef
 
 SECRET_HINTS = ("password",)
+FRONT_ENDS = ("tui", "gui", "recipe-edit")   # not offered inside a front end
+NEEDS_OVERLAY = ("diff", "commit")             # only make sense on an overlay
 
 
 class ArgError(Exception):
@@ -66,6 +71,9 @@ def load_commands():
     parser = build_parser()
     # remember each subcommand's one-line help (stored on the parent's _ChoicesPseudoAction)
     def summaries(p):
+        # front ends show usage text themselves: no ANSI colours (Python 3.14's argparse
+        # adds them when stdout is a terminal, and they would show up as junk in a label)
+        p.color = False
         for a in p._actions:
             if isinstance(a, argparse._SubParsersAction):
                 for ca in a._choices_actions:
@@ -75,7 +83,7 @@ def load_commands():
     summaries(parser)
     for words, sp in iter_commands(parser):
         meta = getattr(sp, "piimg", None) or Meta()
-        if meta.tui and words[0] not in ("tui", "recipe-edit"):
+        if meta.tui and words[0] not in FRONT_ENDS:
             cmds.append(Command(words, sp, meta))
     order = {g: i for i, g in enumerate(GROUPS)}
     cmds.sort(key=lambda c: order.get(c.meta.group, 99))
@@ -124,6 +132,9 @@ def fields_for(cmd, values=None):
                     suggestions = tuple(p.name for p in _local_files(images_dir()))
             except Exception:  # noqa: BLE001
                 suggestions = ()
+        elif kind == "recipe":
+            from ..script import bundled_recipes_dir
+            suggestions = tuple(sorted(p.stem for p in bundled_recipes_dir().glob("*.y*ml")))
         else:
             suggestions = ()
         if kind == "device":
@@ -192,3 +203,113 @@ def parse(argv):
     """Validate a command line the way the CLI would; returns the Namespace or
     raises ArgError with argparse's message."""
     return build_parser(RaisingParser).parse_args(argv)
+
+
+# ------------------------------------------------------------ for the views
+
+def visible(cmds, needle="", has_overlay=False):
+    """The commands to list, in order, as (group, Command) pairs: those that
+    match `needle` (name or summary), without the overlay-only ones unless an
+    overlay is open."""
+    out = []
+    needle = needle.lower().strip()
+    for c in cmds:
+        if (c.name in NEEDS_OVERLAY or getattr(c, "needs_overlay", False)) and not has_overlay:
+            continue
+        if needle and needle not in (c.name + " " + c.summary()).lower():
+            continue
+        out.append((c.meta.group, c))
+    return out
+
+
+def command_help(c, title=True, options=True):
+    """The long help for a command, as rich Text (title: start with `piimg NAME`;
+    options: list the options, for a view that does not show them in a form)."""
+    t = Text()
+    if title:
+        t.append(f"piimg {c.name}\n", "bold")
+    t.append(c.help + "\n\n")
+    t.append(c.usage() + "\n", "dim")
+    for a in (c.field_actions() if options else ()):
+        name = max(a.option_strings, key=len) if a.option_strings else a.dest
+        t.append(f"\n  {name}", "bold")
+        if a.help:
+            t.append(f"  {a.help.replace('%(default)s', str(a.default))}", "")
+    if c.meta.writes is not False:
+        t.append("\n\nChanges the target" + (" (depending on the options)" if callable(c.meta.writes) else "")
+                 + ".", "yellow")
+    return t
+
+
+def recipe_var_fields(name):
+    """For `run`: one FieldDef per variable the recipe `name` declares.
+    Returns (fields, note): note explains an empty list."""
+    import yaml
+    from ..script import find_recipe
+    if not name:
+        return [], "(choose a recipe to see its variables)"
+    try:
+        doc = yaml.safe_load(find_recipe(name).read_text())
+    except Exception:  # noqa: BLE001 - not found / not YAML: no variables to show
+        return [], "(no such recipe)"
+    spec = (doc or {}).get("vars") or {} if isinstance(doc, dict) else {}
+    if not spec:
+        return [], "(the recipe has no variables)"
+    return var_fields(spec), ""
+
+
+def var_fields(spec, prefix=""):
+    """FieldDefs for a recipe's vars: mapping (name -> {default, choices, required, help})."""
+    out = []
+    for vname, d in (spec or {}).items():
+        d = d if isinstance(d, dict) else {}
+        out.append(FieldDef(key=prefix + str(vname), label=str(vname),
+                            type="choice" if d.get("choices") else "str",
+                            required=bool(d.get("required")), help=str(d.get("help", "")),
+                            choices=tuple(str(c) for c in d.get("choices") or ()),
+                            value=d.get("default"),
+                            placeholder="" if "default" not in d else f"default: {d['default']}"))
+    return out
+
+
+def var_args(values):
+    """Variable form values -> the --var list of `run`."""
+    return [f"{k}={v}" for k, v in values.items() if v not in ("", None)]
+
+
+@dataclass
+class Confirmation:
+    """What to ask before running: warnings, and a word to type (or None)."""
+    messages: list
+    typed: object = None
+    argv: list = None      # the command line to run once confirmed (yes_flag added)
+
+    @property
+    def needed(self):
+        return bool(self.messages or self.typed)
+
+
+def confirmation(cmd, argv, args, direct_card=None):
+    """What to confirm before running `argv` (parsed: args). direct_card: the
+    card path when commands change a card directly (no overlay). Raises
+    ArgError if the typed confirmation cannot be worked out (e.g. no such
+    device)."""
+    messages = []
+    if cmd.meta.writes_for(args) and direct_card and cmd.meta.target:
+        messages.append(f"This changes the card {direct_card} directly (no overlay).")
+    if cmd.meta.confirm:
+        try:
+            m = cmd.meta.confirm(args)
+        except Exception as e:  # noqa: BLE001
+            m = str(e)
+        if m:
+            messages.append(m)
+    typed = None
+    if cmd.meta.typed_confirm:
+        try:
+            typed = cmd.meta.typed_confirm(args)
+        except Exception as e:  # noqa: BLE001
+            raise ArgError(str(e)) from e
+    if typed and cmd.meta.yes_flag:
+        argv = list(cmd.words) + [cmd.meta.yes_flag] + list(argv[len(cmd.words):])
+    return Confirmation(messages, typed, list(argv))

@@ -9,8 +9,7 @@ Keys, everywhere:
   Left / Right              between buttons in a button row
   Enter / Space             open a drop-down, toggle a checkbox, press a button
 """
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 from rich.text import Text
 from textual import on
@@ -21,6 +20,8 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.suggester import SuggestFromList
 from textual.widgets import Button, Checkbox, Input, Label, Select, Static, TextArea
+
+from ..frontend.fields import from_text, to_text
 
 
 class NavSelect(Select, inherit_bindings=False):
@@ -58,31 +59,6 @@ class StatusLine(Static):
 
 
 # ------------------------------------------------------------------- forms
-
-@dataclass
-class FieldDef:
-    """One form field.
-
-    type: str, secret, int, bool, choice, lines (one value per line), map
-          (KEY=VALUE per line), text (multi-line), yaml (multi-line YAML)
-    """
-    key: str
-    label: str
-    type: str = "str"
-    required: bool = False
-    help: str = ""
-    choices: tuple = ()
-    value: Any = None
-    placeholder: str = ""
-    suggestions: tuple = ()
-    data: dict = field(default_factory=dict)  # caller's own bookkeeping
-
-    def explain(self):
-        bits = [f"{self.label}{' (required)' if self.required else ''}: {self.help or ''}".rstrip(": ")]
-        if self.type in ("lines", "map"):
-            bits.append("one per line" if self.type == "lines" else "KEY=VALUE, one per line")
-        return " — ".join(b for b in bits if b)
-
 
 class Form(VerticalScroll):
     """A column of labelled fields. Posts Form.Focused(field) when a field gets
@@ -128,12 +104,8 @@ class Form(VerticalScroll):
             opts = [(str(c), str(c)) for c in f.choices]
             return NavSelect(opts, value=str(v) if v not in (None, "") and str(v) in map(str, f.choices)
                              else Select.NULL, allow_blank=not f.required, prompt=f.placeholder or "(not set)")
-        if f.type in ("lines", "map", "text", "yaml"):
-            if isinstance(v, (list, tuple)):
-                v = "\n".join(map(str, v))
-            elif isinstance(v, dict):
-                v = "\n".join(f"{k}={_scalar(x)}" for k, x in v.items())
-            ta = NavTextArea(str(v or ""), soft_wrap=f.type == "text", show_line_numbers=f.type in ("text", "yaml"),
+        if f.multiline:
+            ta = NavTextArea(to_text(f, v), soft_wrap=f.type == "text", show_line_numbers=f.type in ("text", "yaml"),
                              tab_behavior="focus")
             ta.add_class("tall" if f.type in ("text", "yaml") and not f.data.get("short") else "short")
             return ta
@@ -154,17 +126,7 @@ class Form(VerticalScroll):
         if isinstance(w, Select):
             return "" if w.value is Select.NULL or w.value is None else str(w.value)
         if isinstance(w, TextArea):
-            text = w.text
-            if f.type == "lines":
-                return [l.strip() for l in text.splitlines() if l.strip()]
-            if f.type == "map":
-                out = {}
-                for l in text.splitlines():
-                    if l.strip():
-                        k, _, val = l.partition("=")
-                        out[k.strip()] = val.strip()
-                return out
-            return text
+            return from_text(f, w.text)
         return w.value
 
     def values(self):
@@ -186,14 +148,6 @@ class Form(VerticalScroll):
     @on(TextArea.Changed)
     def _any_change(self, event):
         self._changed(event.control if hasattr(event, "control") else event.text_area)
-
-
-def _scalar(v):
-    if v is True:
-        return "true"
-    if v is False:
-        return "false"
-    return "" if v is None else str(v)
 
 
 # ----------------------------------------------------------------- dialogs

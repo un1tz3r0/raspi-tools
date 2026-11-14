@@ -90,9 +90,12 @@ def login_users(img):
             if (u["uid"] == 0 or 1000 <= u["uid"] < 60000) and u["shell"] not in NOLOGIN_SHELLS]
 
 
-def users_table(img):
+def users_table(img, keys=False):
+    """Accounts people log in as. keys: also a column with the authorized
+    keys themselves, one per line (for editors)."""
     shadow, groups = shadow_entries(img), group_members(img)
-    t = Table(["user", "uid", "shell", "password", "ssh keys", "groups", "note"], title="Accounts")
+    t = Table(["user", "uid", "shell", "password", "ssh keys", "groups", "note"] + (["keys"] if keys else []),
+              title="Accounts")
     for u in passwd_entries(img):
         if not (u["uid"] == 0 or 1000 <= u["uid"] < 60000):
             continue
@@ -106,10 +109,11 @@ def users_table(img):
             notes.append("first-boot wizard account")
         if "sudo" in mine:
             notes.append("admin (sudo)")
-        t.add(u["name"], u["uid"], u["shell"], state, len(authorized_keys(img, u)) or "",
+        have = authorized_keys(img, u)
+        t.add(u["name"], u["uid"], u["shell"], state, len(have) or "",
               ", ".join(g for g in mine if g in ("sudo", "adm", "video", "gpio", "dialout", "netdev",
                                                  "render", "input")),
-              "; ".join(notes))
+              "; ".join(notes), *(["\n".join(have)] if keys else []))
     return t
 
 
@@ -170,6 +174,24 @@ def add_ssh_keys(img, user, keys):
     if not ssh_enabled(img):
         report += "\nnote: the ssh server is not enabled; `piimg service IMAGE enable ssh`"
     return report
+
+
+def remove_ssh_keys(img, user, keys):
+    """Take keys out of `user`'s authorized_keys (whole lines; comments and
+    other keys stay)."""
+    u = find_user(img, user)
+    if u is None:
+        raise PiImgError(f"No user {user!r} in the image")
+    path = f"{u['home']}/.ssh/authorized_keys"
+    if not img.exists(path):
+        return f"{user}: no authorized_keys"
+    drop = {k.strip() for k in keys if k.strip()}
+    lines = img.read_text(path).splitlines()
+    keep = [l for l in lines if l.strip() not in drop]
+    removed = len(lines) - len(keep)
+    if removed:
+        img.write(path, "\n".join(keep) + ("\n" if keep else ""), mode=0o600, uid=u["uid"], gid=u["gid"])
+    return f"{user}: {removed} key(s) removed, {len(authorized_keys(img, u))} authorized"
 
 
 def set_shell(img, user, shell):
@@ -460,17 +482,70 @@ def default_target(img):
     return "graphical.target (no default.target link; systemd's default)"
 
 
-def services_table(img):
+UNIT_SUFFIXES = (".service", ".socket", ".timer", ".path")
+
+
+def _unit_info(text):
+    """(Description, install targets) of a unit file's text."""
+    m = re.search(r"^Description\s*=\s*(.*)$", text, re.M)
+    install = re.search(r"^\[Install\]\s*$(.*?)(?=^\[|\Z)", text, re.S | re.M)
+    targets = []
+    if install:
+        for _key, val in re.findall(r"^(WantedBy|RequiredBy|Also)\s*=\s*(.*)$", install.group(1), re.M):
+            targets += val.split()
+    return (m.group(1).strip() if m else ""), targets
+
+
+def unit_files(img):
+    """{unit name: path} of the unit files systemctl would list (services,
+    sockets, timers, paths), the first found in UNIT_DIRS order; not
+    templates (name@.service), aliases (symlinks) or masks."""
+    out = {}
+    for d in img.UNIT_DIRS:
+        if not img.g.is_dir(d):
+            continue
+        for n in img.listdir(d):
+            if n in out or not n.endswith(UNIT_SUFFIXES) or "@." in n:
+                continue
+            p = f"{d}/{n}"
+            if img.g.is_symlink(p) or not img.g.is_file(p):
+                continue
+            out[n] = p
+    return out
+
+
+def services_table(img, all_units=False):
+    """Enabled and masked units; with all_units also the disabled ones (those
+    with an [Install] section) and the static ones (without: they start only
+    when something else needs them, and can only be masked)."""
     by_unit = {}
     for target, unit, tgt in enabled_links(img):
         by_unit.setdefault(unit, []).append(target)
-    t = Table(["unit", "state", "wanted by", "unit file", "origin"], title="Enabled and masked units")
-    for unit in sorted(by_unit):
+    masked = set(masked_units(img))
+    files = unit_files(img) if all_units else {}
+    title = "Systemd units" if all_units else "Enabled and masked units"
+    t = Table(["unit", "state", "wanted by", "unit file", "origin", "description"], title=title)
+
+    def origin(f):
+        return "local" if f and f.startswith(("/etc/", "/usr/local/")) else "package"
+    rows = []
+    for unit in by_unit:
+        if unit in masked:
+            continue
         f = img.find_unit(unit)
-        origin = "local" if f and f.startswith(("/etc/", "/usr/local/")) else "package"
-        t.add(unit, "enabled" if f else "BROKEN (no unit file)", ", ".join(by_unit[unit]), f or "", origin)
-    for unit in masked_units(img):
-        t.add(unit, "masked", "", "/dev/null", "local")
+        desc = _unit_info(img.read_text(f))[0] if f else ""
+        rows.append((unit, "enabled" if f else "BROKEN (no unit file)", ", ".join(by_unit[unit]), f or "",
+                     origin(f), desc))
+    for unit in masked:
+        real = files.get(unit)   # the unit file under the mask, for its description
+        rows.append((unit, "masked", "", "/dev/null", "local", _unit_info(img.read_text(real))[0] if real else ""))
+    for unit, f in files.items():
+        if unit in by_unit or unit in masked:
+            continue
+        desc, targets = _unit_info(img.read_text(f))
+        rows.append((unit, "disabled" if targets else "static", "", f, origin(f), desc))
+    for r in sorted(rows, key=lambda r: r[0]):
+        t.add(*r)
     t.footer = f"default target: {default_target(img)}"
     return t
 
@@ -507,11 +582,7 @@ def unit_action(img, action, unit):
         img.mask_unit(unit)
         return f"{unit}: masked (it cannot start, even when something else wants it)"
     if action == "unmask":
-        p = f"/etc/systemd/system/{unit}"
-        if img.g.is_symlink(p) and img.g.readlink(p) == "/dev/null":
-            img.g.rm(p)
-            return f"{unit}: unmasked"
-        return f"{unit}: was not masked"
+        return f"{unit}: unmasked" if img.unmask_unit(unit) else f"{unit}: was not masked"
     if action == "show":
         return unit_show(img, unit)
     raise PiImgError(f"unknown action {action!r}")
@@ -617,6 +688,97 @@ def get_hostname(img):
     return img.read_text("/etc/hostname").strip() if img.exists("/etc/hostname") else "(none)"
 
 
+# ------------------------------------------------------------- system settings
+
+def _config_lines(img):
+    """config.txt's active lines (not comments), stripped."""
+    if not img.exists(img.config_txt):
+        return []
+    return [l.strip() for l in img.read_text(img.config_txt).splitlines()
+            if l.strip() and not l.lstrip().startswith("#")]
+
+
+def _dtparam_on(lines, name):
+    """raspi-config's get_i2c/get_spi: dtparam=...,NAME[=on],... in config.txt."""
+    pat = re.compile(rf"^(device_tree_param|dtparam)=([^,]*,)*{name}(=(on|true|yes|1))?(,.*)?$")
+    return any(pat.match(l) for l in lines)
+
+
+def _env_value(img, path, key):
+    if not img.exists(path):
+        return ""
+    m = re.search(rf"^{key}=\"?([^\"\n]*)\"?", img.read_text(path), re.M)
+    return m.group(1).strip() if m else ""
+
+
+SETTINGS = [
+    # key, label, kind (text, choice, switch), raspi-config call, help
+    ("hostname", "Hostname", "text", "do_hostname", "the name the Pi uses on the network"),
+    ("boot mode", "Boot into", "choice", "do_boot_behaviour", "console or desktop, with or without "
+     "logging in automatically (the first regular user)"),
+    ("wifi country", "Wi-Fi country", "text", "do_wifi_country", "two-letter code, e.g. GB, US, DE; "
+     "wifi stays off until one is set"),
+    ("ssh", "SSH server", "switch", "do_ssh", "start the ssh server at boot"),
+    ("i2c", "I2C", "switch", "do_i2c", "the ARM I2C bus (dtparam=i2c_arm) and the i2c-dev module"),
+    ("spi", "SPI", "switch", "do_spi", "the SPI bus (dtparam=spi)"),
+    ("serial port", "Serial port", "switch", "do_serial_hw", "the UART (enable_uart=1)"),
+    ("serial console", "Serial console", "switch", "do_serial_cons", "a login console on the serial "
+     "port (console=serial0 on the kernel command line)"),
+    ("1-wire", "1-Wire", "switch", "do_onewire", "the 1-Wire bus on GPIO 4 (dtoverlay=w1-gpio)"),
+    ("locale", "Locale", "text", "do_change_locale", "e.g. en_GB.UTF-8; compiled on first boot if new"),
+    ("timezone", "Time zone", "text", "do_change_timezone", "e.g. Europe/London, America/New_York"),
+    ("keyboard", "Keyboard layout", "text", "do_configure_keyboard", "an XKB layout, e.g. gb, us, de"),
+]
+
+
+def settings_state(img):
+    """What raspi-config would show, read offline: {key: value}; switches are on/off."""
+    lines = _config_lines(img)
+    words = img.read_text(img.cmdline_txt).split() if img.exists(img.cmdline_txt) else []
+    onoff = {True: "on", False: "off"}
+    reg = next((w.split("=", 1)[1] for w in words if w.startswith("cfg80211.ieee80211_regdom=")), "")
+    tz = img.read_text("/etc/timezone").strip() if img.exists("/etc/timezone") else ""
+    if not tz and img.g.is_symlink("/etc/localtime"):
+        tz = img.g.readlink("/etc/localtime").split("zoneinfo/", 1)[-1]
+    return {
+        "hostname": get_hostname(img),
+        "boot mode": boot_mode_state(img)["mode"],
+        "wifi country": reg,
+        "ssh": onoff[ssh_enabled(img)],
+        "i2c": onoff[_dtparam_on(lines, "i2c(_arm)?")],
+        "spi": onoff[_dtparam_on(lines, "spi")],
+        "serial port": onoff["enable_uart=1" in lines],
+        "serial console": onoff[any(w.startswith(("console=serial0", "console=ttyAMA0", "console=ttyS0"))
+                                    for w in words)],
+        "1-wire": onoff[any(l.startswith("dtoverlay=w1-gpio") for l in lines)],
+        "locale": _env_value(img, "/etc/default/locale", "LANG"),
+        "timezone": tz,
+        "keyboard": _env_value(img, "/etc/default/keyboard", "XKBLAYOUT"),
+    }
+
+
+def settings_table(img):
+    t = Table(["setting", "value", "label", "kind", "help"], title="System settings")
+    state = settings_state(img)
+    for key, label, kind, _call, help_ in SETTINGS:
+        t.add(key, state[key], label, kind, help_)
+    return t
+
+
+def settings_calls(changes):
+    """{key: new value} -> raspi-config nonint calls (raspi_config recipe step)."""
+    calls = {k: c for k, _l, _k, c, _h in SETTINGS}
+    modes = {"console": "B1", "console-autologin": "B2", "desktop": "B3", "desktop-autologin": "B4"}
+    out = []
+    for key, value in changes.items():
+        if key == "boot mode":
+            value = modes[value]
+        elif value in ("on", "off"):
+            value = "0" if value == "on" else "1"   # raspi-config: 0 = enable
+        out.append(f"{calls[key]} {value}")
+    return out
+
+
 # ------------------------------------------------------------------ autostart
 
 _KIOSK_RE = re.compile(r"startx|xinit|chromium|firefox|cage|labwc|wayfire|kiosk|kodi|python|node|\.sh\b", re.I)
@@ -715,7 +877,8 @@ def autostart_table(img):
 
 def network_table(img):
     d = "/etc/NetworkManager/system-connections"
-    t = Table(["connection", "type", "ssid / interface", "autoconnect", "file"], title="NetworkManager profiles")
+    t = Table(["connection", "type", "ssid / interface", "autoconnect", "file", "priority", "hidden",
+               "security"], title="NetworkManager profiles")
     if img.g.is_dir(d):
         for n in sorted(img.listdir(d)):
             text = img.read_text(f"{d}/{n}")
@@ -724,7 +887,8 @@ def network_table(img):
                 m = re.search(rf"^{key}=(.*)$", text, re.M)
                 return m.group(1).strip() if m else ""
             t.add(val("id") or n, val("type"), val("ssid") or val("interface-name"),
-                  val("autoconnect") or "true", f"{d}/{n}")
+                  val("autoconnect") or "true", f"{d}/{n}", val("autoconnect-priority") or "0",
+                  val("hidden") or "false", val("key-mgmt") or ("none" if val("type") == "wifi" else ""))
     words = img.read_text(img.cmdline_txt).split()
     reg = next((w.split("=", 1)[1] for w in words if w.startswith("cfg80211.ieee80211_regdom=")), None)
     t.footer = f"wifi country: {reg or 'not set (wifi may stay disabled)'}"
@@ -754,6 +918,44 @@ def add_wifi(img, ssid, password=None, country=None, hidden=False, priority=0):
         report.append("note: no wifi country set; pass --country XX (Raspberry Pi OS keeps wifi "
                       "off until one is set)")
     return "\n".join(report)
+
+
+NM_DIR = "/etc/NetworkManager/system-connections"
+
+
+def _nm_profile(img, name):
+    """The keyfile of the profile whose id (or file name) is `name`."""
+    if img.g.is_dir(NM_DIR):
+        for n in img.listdir(NM_DIR):
+            p = f"{NM_DIR}/{n}"
+            m = re.search(r"^id=(.*)$", img.read_text(p), re.M)
+            if (m and m.group(1).strip() == name) or n in (name, f"{name}.nmconnection"):
+                return p
+    raise PiImgError(f"No NetworkManager profile {name!r} in the image")
+
+
+def remove_wifi(img, name):
+    p = _nm_profile(img, name)
+    img.g.rm(p)
+    return f"profile {name!r} removed ({p})"
+
+
+def set_profile_options(img, name, priority=None, autoconnect=None):
+    """Change a profile's autoconnect-priority and autoconnect ([connection])."""
+    p = _nm_profile(img, name)
+    text = img.read_text(p)
+    for key, value in (("autoconnect-priority", priority), ("autoconnect", autoconnect)):
+        if value is None:
+            continue
+        value = str(value).lower() if isinstance(value, bool) else str(value)
+        if re.search(rf"^{key}=", text, re.M):
+            text = re.sub(rf"^{key}=.*$", f"{key}={value}", text, count=1, flags=re.M)
+        else:
+            text = re.sub(r"^\[connection\][ \t]*$", f"[connection]\n{key}={value}", text, count=1, flags=re.M)
+    img.write(p, text, mode=0o600)
+    return f"profile {name!r}: " + ", ".join(f"{k} {v}" for k, v in (("priority", priority),
+                                                                      ("autoconnect", autoconnect))
+                                              if v is not None)
 
 
 def set_wifi_country(img, country):

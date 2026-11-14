@@ -11,18 +11,12 @@ def main(target=None, overlay=None):
 def edit_recipe(recipe=None, image=None):
     """`piimg recipe-edit`: a file path opens (or creates) that file; a bundled
     recipe's name opens a copy of it as a template; nothing shows a picker."""
-    from ..script import bundled_recipes_dir
+    from ..frontend.recipe import find_template
     from .recipe_editor import RecipeEditorApp
     if recipe is None:
         RecipeEditorApp(image=image, pick=True).run()
         return 0
     p = Path(recipe)
-    template = None
-    if not p.exists() and "/" not in recipe and not recipe.endswith((".yaml", ".yml")):
-        for ext in (".yaml", ".yml"):
-            q = bundled_recipes_dir() / (recipe + ext)
-            if q.is_file():
-                template, p = q, None
-                break
-    RecipeEditorApp(p, image, template).run()
+    template = None if p.exists() else find_template(recipe)
+    RecipeEditorApp(None if template else p, image, template).run()
     return 0

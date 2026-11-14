@@ -21,37 +21,14 @@ from .errors import PiImgError
 
 
 def _import_guestfs():
-    """Import the libguestfs Python bindings, even from a venv that can't see them.
-
-    The bindings (apt: python3-guestfs) are a compiled extension for the distro
-    Python and are not on PyPI, so a plain `uv sync` / `python -m venv` venv
-    does not include them. If the normal import fails, look for them in the
-    distro's package directories and add that directory to the *end* of
-    sys.path (venv packages still win). This only works when the venv runs the
-    same Python minor version the distro package was built for.
-    """
+    """Import the libguestfs Python bindings (apt: python3-guestfs), even from a
+    venv that can't see them: see sysimport.import_system."""
+    from .sysimport import import_system
     try:
-        import guestfs
-        return guestfs
+        return import_system("guestfs")
     except ImportError:
         pass
     v = f"{sys.version_info.major}.{sys.version_info.minor}"
-    candidates = [
-        "/usr/lib/python3/dist-packages",                  # Debian/Ubuntu
-        f"/usr/lib/python{v}/site-packages",               # Fedora/Arch (noarch dir)
-        f"/usr/lib64/python{v}/site-packages",             # Fedora/RHEL (arch dir)
-        f"/usr/local/lib/python{v}/dist-packages",
-        f"/usr/local/lib/python{v}/site-packages",
-    ]
-    for d in candidates:
-        if d in sys.path or not (Path(d) / "guestfs.py").is_file():
-            continue
-        sys.path.append(d)
-        try:
-            import guestfs
-            return guestfs
-        except ImportError:
-            sys.path.remove(d)  # wrong ABI / broken install; try the next one
     raise PiImgError(
         "cannot import guestfs (libguestfs Python bindings).\n"
         "Install them with: sudo apt install python3-guestfs\n"
@@ -103,7 +80,7 @@ def _ensure_supermin_kernel():
 
 
 def _borrow_sudo_users_appliance():
-    """Under sudo, boot the invoking user's already-built libguestfs appliance.
+    """Under sudo or pkexec, boot the invoking user's already-built libguestfs appliance.
 
     Otherwise root builds its own (~2 GB in /var/tmp/.guestfs-0, a minute or
     more, and it fails with ENOSPC on a full disk). libguestfs's "fixed
@@ -111,9 +88,11 @@ def _borrow_sudo_users_appliance():
     root and a README.fixed marker; we point one at the user's build. The
     appliance's root disk is only ever used as a read-only backing file.
     """
-    uid = os.environ.get("SUDO_UID")
-    if os.geteuid() != 0 or not uid or os.environ.get("LIBGUESTFS_PATH"):
+    from .config import invoking_user
+    who = invoking_user()
+    if who is None or os.environ.get("LIBGUESTFS_PATH"):
         return
+    uid = who.pw_uid
     built = Path(os.environ.get("LIBGUESTFS_CACHEDIR") or "/var/tmp") / f".guestfs-{uid}" / "appliance.d"
     parts = ("kernel", "initrd", "root")
     if not all((built / p).is_file() for p in parts):
@@ -122,7 +101,7 @@ def _borrow_sudo_users_appliance():
     atexit.register(shutil.rmtree, fixed, ignore_errors=True)
     for p in parts:
         (fixed / p).symlink_to(built / p)
-    (fixed / "README.fixed").write_text(f"piimg: borrowed from {built} (sudo user {uid})\n")
+    (fixed / "README.fixed").write_text(f"piimg: borrowed from {built} (user {uid})\n")
     os.environ["LIBGUESTFS_PATH"] = str(fixed)
 
 
@@ -131,9 +110,12 @@ def _image_format(path):
     if is_block_device(path):
         check_access(path, write=False)
         return "raw"  # a card holds a raw disk image; don't let qemu-img guess
-    out = subprocess.run(["qemu-img", "info", "--output=json", str(path)],
-                         check=True, capture_output=True, text=True).stdout
-    return json.loads(out)["format"]
+    if not os.path.exists(path):
+        raise PiImgError(f"No such image: {path}")
+    r = subprocess.run(["qemu-img", "info", "--output=json", str(path)], capture_output=True, text=True)
+    if r.returncode:
+        raise PiImgError(f"qemu-img cannot read {path}: {r.stderr.strip()}")
+    return json.loads(r.stdout)["format"]
 
 
 # ----------------------------------------------------------------- the image
@@ -414,7 +396,21 @@ class Image:
     def mask_unit(self, unit):
         if "." not in unit:
             unit += ".service"
-        self.symlink("/dev/null", f"/etc/systemd/system/{unit}")
+        p = f"/etc/systemd/system/{unit}"
+        if self.exists(p) and not self.g.is_symlink(p):
+            # systemctl refuses this too: the mask link would replace the unit file
+            raise PiImgError(f"Cannot mask {unit}: its unit file is {p} (a local unit); disable it instead")
+        self.symlink("/dev/null", p)
+
+    def unmask_unit(self, unit):
+        """Remove a /dev/null mask link; False if the unit was not masked."""
+        if "." not in unit:
+            unit += ".service"
+        p = f"/etc/systemd/system/{unit}"
+        if self.g.is_symlink(p) and self.g.readlink(p) == "/dev/null":
+            self.g.rm(p)
+            return True
+        return False
 
     def package_installed(self, name):
         if not hasattr(self, "_dpkg_status"):
