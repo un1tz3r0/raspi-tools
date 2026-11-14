@@ -410,6 +410,10 @@ def h_gui(a):
     if a.install_desktop or a.uninstall_desktop:
         print(gui.install_desktop(remove=a.uninstall_desktop))
         return 0
+    if a.install_polkit or a.uninstall_polkit:
+        from .frontend import polkit
+        print(polkit.install(remove=a.uninstall_polkit))
+        return 0
     return gui.main(a.image, a.overlay, a.recipe)
 
 
@@ -456,6 +460,10 @@ def build_parser(parser_class=argparse.ArgumentParser):
     _arg(s, "--install-desktop", action="store_true",
          help="add piimg to the desktop's app launcher (~/.local/share/applications) and exit")
     _arg(s, "--uninstall-desktop", action="store_true", help="remove it from the app launcher and exit")
+    _arg(s, "--install-polkit", action="store_true",
+         help="(as root) let polkit remember your password for about five minutes after a card command "
+              "asks for it, instead of asking every time; installs a polkit action and its launcher, and exits")
+    _arg(s, "--uninstall-polkit", action="store_true", help="(as root) remove them again and exit")
 
     # ---- Inspect
     s = _cmd(sub, "info", "summary: partitions, OS, hostname, boot mode, users", h_info, output="table")

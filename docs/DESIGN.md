@@ -221,7 +221,12 @@ the image (`userconf-pi` 0.19, `piwiz` 1.8, cloud-init's Pi OS distro class):
   (JSON lines on its stdin) to the command. piimg finds the user's settings
   and libguestfs appliance from `PKEXEC_UID` as from `SUDO_UID`
   (`config.invoking_user`), and overlays and flattened images it creates as
-  root are given back to the user. Terminal commands (`shell`, `edit`) run in
+  root are given back to the user. Optionally (`piimg gui --install-polkit`,
+  `frontend/polkit.py`) a root-owned launcher, `/usr/local/libexec/piimg-root`,
+  with its own polkit action (`auth_admin_keep`) replaces `env`: pkexec's
+  default action covers every program, so only a piimg-specific one can let
+  polkit remember the password; the launcher runs only `python -I -m piimg`
+  from the venv it was installed from. Terminal commands (`shell`, `edit`) run in
   a VTE terminal without the supervisor: the terminal stops them.
 - Editors (`frontend/editors.py`) are the read-change-commit pages: a query
   command's table is the initial state, each item keeps its original values

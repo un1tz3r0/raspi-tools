@@ -44,6 +44,7 @@ One key each; combine with `all` / `any` / `not`.
 | `package: NAME` | the Debian package is installed (read from `dpkg/status`) |
 | `os_release: {VERSION_CODENAME: trixie}` | every key matches `/etc/os-release` |
 | `var: {name, equals \| in \| set}` | recipe variable test |
+| `dry_run: true` | this is a `--dry-run` (nothing was written, so checks of earlier steps' results would fail); `dry_run: false` the opposite |
 | `not: COND`, `all: [..]`, `any: [..]` | boolean combinations |
 
 Branching: put `then:` and/or `else:` (lists of steps) next to `when:`.

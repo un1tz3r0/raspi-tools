@@ -130,6 +130,7 @@ def test_events_and_tables():
 def test_root_command_goes_through_pkexec_and_the_supervisor(monkeypatch):
     monkeypatch.setattr(os, "geteuid", lambda: 1000)
     monkeypatch.setattr(P.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("piimg.frontend.polkit.installed", lambda: False)
     cmd = P.piimg_command(["info", "/dev/sdz"], root=True, env={"PIIMG_COLOR": "1", "SECRET": "x"}, cwd="/w")
     assert cmd[:4] == ["/usr/bin/pkexec", "/usr/bin/env", "-C", "/w"]
     assert "PIIMG_COLOR=1" in cmd and not any(c.startswith("SECRET") for c in cmd)
@@ -546,3 +547,36 @@ def test_images_and_overlay_editors():
     assert got == {"/etc/a.wants/x.service": "changed", "/etc/hostname": "added", "/home/old": "removed"}
     assert not ov.dirty and ov.commit("/x/o.qcow2") == (["commit", "--", "/x/o.qcow2"], None)
     assert [i.key for i in ov.items if ov.matches(i, "", "added")] == ["/etc/hostname"]
+
+
+def test_polkit_launcher_runs_only_piimg(tmp_path, monkeypatch):
+    from piimg.errors import PiImgError
+    from piimg.frontend import polkit
+    launcher, policy = tmp_path / "libexec" / "piimg-root", tmp_path / "actions" / "x.policy"
+    print(polkit.install(launcher=launcher, policy=policy, check_root=False))
+    assert polkit.installed(launcher, policy) and oct(launcher.stat().st_mode & 0o777) == "0o755"
+    import xml.etree.ElementTree as ET  # polkitd silently ignores a policy it cannot parse
+    action = ET.fromstring(policy.read_bytes()).find("action")
+    assert action.get("id") == polkit.ACTION and action.find("defaults/allow_active").text == "auth_admin_keep"
+    assert action.find("annotate").text == str(launcher)
+    assert not polkit.installed(launcher, policy, python="/elsewhere/.venv/bin/python")
+    # the supervisor takes end of input as Stop, so keep its stdin open, as a front end does
+    ok = subprocess.Popen([str(launcher), "--cwd", str(tmp_path), "--supervise", "PIIMG_COLOR=0", "--", "--help"],
+                          stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    ok.stdin.write(P.stdin_orders(None))
+    ok.stdin.flush()
+    out = ok.stdout.read().decode()
+    assert ok.wait(30) == 0 and "Customize, inspect and repair" in out
+    ok.stdin.close()
+    bad = subprocess.run([str(launcher), "LD_PRELOAD=/x.so", "--", "--help"], capture_output=True, text=True)
+    assert bad.returncode != 0 and "unexpected argument" in bad.stderr
+    monkeypatch.setattr(os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(P.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(polkit, "installed", lambda: True)
+    cmd = P.piimg_command(["info", "/dev/sdz"], root=True, env={"PIIMG_COLOR": "1"}, cwd="/w")
+    assert cmd == ["/usr/bin/pkexec", str(polkit.LAUNCHER), "--cwd", "/w", "--supervise", "PIIMG_COLOR=1",
+                   "--", "--progress=json", "--json", "info", "/dev/sdz"]
+    with pytest.raises(PiImgError):
+        polkit.install(launcher=launcher, policy=policy)  # not root
+    assert "removed" in polkit.install(remove=True, launcher=launcher, policy=policy, check_root=False)
+    assert not launcher.exists() and not policy.exists()

@@ -39,6 +39,9 @@ steps:
         ls /sys/class/net
         curl -sS -m 25 -I http://deb.debian.org/debian/ | head -1 || echo "NO-NETWORK"
         exit 0
-  - when: {exists: /opt/demo/live-was-here}
-    then: [{echo: "live marker visible offline again"}]
-    else: [{fail: "live step left no trace"}]
+  - when: {dry_run: true}       # a dry run skipped the live step, so there is no marker to find
+    then: [{echo: "dry run: live marker not checked"}]
+    else:
+      - when: {exists: /opt/demo/live-was-here}
+        then: [{echo: "live marker visible offline again"}]
+        else: [{fail: "live step left no trace"}]

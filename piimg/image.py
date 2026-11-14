@@ -180,10 +180,39 @@ def diff(overlay):
     cmd = ["virt-diff", "--format=" + _image_format(backing), "-a", str(backing),
            "--format=qcow2", "-A", str(overlay)]
     with progress.task(f"Comparing {Path(overlay).name} with its base"):
-        r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode not in (0,):
-        raise PiImgError(f"virt-diff failed: {r.stderr.strip()}")
-    return r.stdout.rstrip() or "no differences"
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            out, err = p.communicate()
+        except KeyboardInterrupt:
+            _stop_guestfs_tool(p)
+            raise
+    if p.returncode not in (0,):
+        raise PiImgError(f"virt-diff failed: {err.strip()}")
+    return out.rstrip() or "no differences"
+
+
+def _stop_guestfs_tool(p):
+    """Stop a virt-* child on Ctrl-C (it usually got the same SIGINT already).
+
+    Ubuntu's AppArmor profile for the guestfs tools accepts signals only from
+    unconfined processes and the tools themselves. piimg started by the uv
+    snap (`uv run piimg`) carries the snap's label, so even root cannot signal
+    the tool: say so, rather than fail in subprocess's own cleanup."""
+    try:
+        p.terminate()
+        p.wait(10)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+    except PermissionError:
+        try:
+            label = Path("/proc/self/attr/current").read_text().strip()
+        except OSError:
+            label = "a confined"
+        raise PiImgError(f"stopped, but {Path(p.args[0]).name} (pid {p.pid}) runs on until it finishes: "
+                         f"AppArmor's guestfs-tools profile does not accept signals from piimg's profile "
+                         f"({label}). Start piimg as .venv/bin/piimg (or from the app launcher) instead of "
+                         f"`uv run piimg` to be able to stop it.") from None
 
 
 def flatten(src, dst, fmt=None, compress=False):

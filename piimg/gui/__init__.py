@@ -2,6 +2,7 @@
 
     piimg gui [TARGET [OVERLAY]] [--recipe FILE]
     piimg gui --install-desktop        add piimg to the desktop's app launcher
+    sudo piimg gui --install-polkit    let polkit remember the password a while (frontend.polkit)
 
 It does what `piimg tui` does, with the same models (piimg.frontend): pick a
 card or image, run any command with a form for its options, watch it in a run

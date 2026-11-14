@@ -171,8 +171,14 @@ def step_summary(step):
     if isinstance(arg, dict):
         a = RS.ACTIONS.get(act)
         keys = [f.name for f in a.fields] if a else list(arg)
-        first = next((k for k in keys if k in arg and k not in ("content", "script")), None)
-        desc = _short(arg[first], 50) if first else ""
+        # the first field that says what the step does: not a flag (live's
+        # `network: true`), and a script by its first command
+        first = next((k for k in keys if k in arg and k != "content" and not isinstance(arg[k], bool)), None)
+        if first == "script" and isinstance(arg[first], str):
+            lines = [ln.strip() for ln in arg[first].splitlines()]
+            desc = _short(next((ln for ln in lines if ln and not ln.startswith("#")), ""), 50)
+        else:
+            desc = _short(arg[first], 50) if first else ""
         extra = [k for k in arg if k != first]
         if act in ("config_txt", "cmdline", "systemd"):
             desc = "; ".join(f"{k} {_short(v, 30)}" for k, v in arg.items())

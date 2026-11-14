@@ -248,3 +248,36 @@ def test_local_path_stays_in_images_folder(catalog_env):
         catalog._local_path("/etc/passwd")
     with pytest.raises(PiImgError, match="only files in the images folder"):
         catalog._local_path("../conf/x")
+
+
+def test_step_summary_names_what_a_step_does_not_a_flag():
+    live = {"live": {"network": True, "timeout": 600, "script": "\n# say hi\necho hi\nexit 0\n"}}
+    text = E.step_summary(live).plain
+    assert text.startswith("live echo hi") and "true" not in text
+    assert E.step_summary({"live": {"script_file": "setup.sh", "network": False}}).plain.startswith("live setup.sh")
+    assert E.step_summary({"write": {"path": "/x", "content": "y"}}).plain.startswith("write /x")
+
+
+def test_dry_run_condition(tmp_path):
+    recipe = tmp_path / "r.yaml"
+    recipe.write_text("steps: []\n")
+    dry, real = Runner("x.img", recipe, dry_run=True), Runner("x.img", recipe)
+    assert dry.cond({"dry_run": True}) and not dry.cond({"dry_run": False})
+    assert real.cond({"dry_run": False}) and not real.cond({"not": {"dry_run": False}})
+
+
+def test_stopping_a_guestfs_tool_apparmor_will_not_let_us_signal():
+    import subprocess
+    from piimg.errors import PiImgError
+    from piimg.image import _stop_guestfs_tool
+
+    class Confined:  # what a virt-* child looks like to piimg started by the uv snap
+        args, pid = ["/usr/bin/virt-diff", "-a", "x"], 4242
+
+        def terminate(self):
+            raise PermissionError(13, "Permission denied")
+    with pytest.raises(PiImgError, match="virt-diff .*AppArmor.*.venv/bin/piimg"):
+        _stop_guestfs_tool(Confined())
+    p = subprocess.Popen(["sleep", "30"])
+    _stop_guestfs_tool(p)
+    assert p.returncode is not None

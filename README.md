@@ -51,8 +51,16 @@ uv sync                 # creates .venv, installs piimg and its dependencies
 uv run piimg --help
 ```
 
+If uv is installed as a snap (`/snap/bin/uv`), programs started by `uv run`
+carry the snap's AppArmor profile, and Ubuntu's profile for the guestfs tools
+then refuses their signals: Stop or Ctrl-C cannot end `piimg diff`. Run
+`.venv/bin/piimg` (or the app launcher entry from `piimg gui
+--install-desktop`) instead of `uv run piimg` to avoid that.
+
 `uv sync` installs the development tools too (pytest). Run the tests with
-`uv run pytest`.
+`uv run pytest`. The GUI tests need `mutter` (they run it headless); set
+`PIIMG_TEST_IMAGE` to a Raspberry Pi OS image to include the tests that need
+one (the image is only read). Pending work is in [TODO.md](TODO.md).
 
 ## Quick start
 

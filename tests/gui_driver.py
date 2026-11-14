@@ -260,6 +260,8 @@ def scenario_recipe(app):
     shutil.rmtree(demo, ignore_errors=True)
     shutil.copytree(src, demo)
     path = os.path.join(demo, "recipe.yaml")
+    with open(path, "a") as f:  # a step that fails on purpose, to see it reported and selected
+        f.write('  - when: {dry_run: true}\n    then: [{fail: "the GUI test stops the dry run here"}]\n')
     win = RecipeWindow(app, path)
     win.present()
     wait(0.8)
@@ -339,7 +341,7 @@ def scenario_recipe(app):
         if not rd.errors:
             from piimg.gui.forms import buffer_text
             print(buffer_text(rd.log_view.get_buffer())[-3000:], flush=True)
-        # the demo's dry run fails on purpose at its last check (a dry run skips the live step)
+        # the copy's last step fails on purpose under --dry-run
         check(rd.rc == 1 and rd.errors, "dry run reports the failing step")
         r = m.rows[win.cursor]
         check(m.error_where and r.where == m.error_where, f"the failing step is selected ({m.error_where})")

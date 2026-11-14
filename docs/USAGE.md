@@ -248,8 +248,11 @@ piimg's own settings (`piimg config`) are under Preferences in the main menu
 
 **Root.** Run `piimg gui` as yourself, not with sudo. Image files and overlays
 never need root. When a command must open a card you cannot open, it runs
-through `pkexec` and polkit asks for your password (each time; polkit does not
-remember it for a plain `pkexec`). Reading the summary of such a card waits
+through `pkexec` and polkit asks for your password. By default it asks each
+time; to have it remembered for about five minutes, install piimg's polkit
+action once with `sudo .venv/bin/piimg gui --install-polkit` (undo with
+`--uninstall-polkit`). Like sudo's timestamp, that lets programs you run in
+those minutes start piimg as root without asking. Reading the summary of such a card waits
 for you to press Read. Overlays on a card (`gui /dev/sdc fix.qcow2`) are
 created as root but stay your files; after that, commands only read the card,
 so they still need root, but `commit` is the only one that writes it.

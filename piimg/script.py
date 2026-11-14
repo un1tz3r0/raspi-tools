@@ -220,13 +220,15 @@ class Runner:
             if "in" in v:
                 return str(val) in [str(x) for x in v["in"]]
             raise RecipeError(f"{where}: var condition needs set/equals/in")
+        if k == "dry_run":
+            return self.dry == bool(v)
         if k == "package":
             return img.package_installed(v)
         if k == "os_release":
             text = img.read_text("/etc/os-release")
             return all(re.search(rf'^{re.escape(a)}="?{re.escape(str(b))}"?$', text, re.M) for a, b in v.items())
         raise RecipeError(f"{where}: unknown condition {k!r} "
-                          f"(exists, grep, not, all, any, var, package, os_release)")
+                          f"(exists, grep, not, all, any, var, package, os_release, dry_run)")
 
     # -------------------------------------------------------------- actions
 

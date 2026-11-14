@@ -175,7 +175,8 @@ ACTIONS = {a.name: a for a in [
 # Not actions, but things the editor can insert.
 IF_BLOCK_HELP = ("A conditional block: when: holds a condition; the steps under then: run if it is "
                  "true, those under else: if it is false. Conditions: exists: PATH, grep: {path, pattern}, "
-                 "package: NAME, os_release: {KEY: value}, var: {name, equals | in | set}, and "
+                 "package: NAME, os_release: {KEY: value}, var: {name, equals | in | set}, "
+                 "dry_run: true (only under --dry-run), and "
                  "not: / all: [..] / any: [..] to combine them.")
 CONDITION_EXAMPLE = "grep: {path: \"{{boot}}/config.txt\", pattern: '^dtparam=spi=on'}"
 COMMON_HELP = {

@@ -62,6 +62,10 @@ def piimg_command(argv, root=False, env=None, cwd=None, json_mode=True, supervis
                               "run piimg from a terminal with sudo instead")
     env = env or os.environ
     keep = [f"{k}={env[k]}" for k in KEEP_ENV if k in env]
+    from . import polkit
+    if polkit.installed():  # its own polkit action, which remembers the password for a while
+        return [pkexec, str(polkit.LAUNCHER), *(["--cwd", str(cwd)] if cwd else []),
+                *(["--supervise"] if supervise else []), *keep, "--", *base[3:]]
     return [pkexec, envbin, *(["-C", str(cwd)] if cwd else []), "PYTHONUNBUFFERED=1", *keep,
             *([sys.executable, "-m", "piimg.frontend.supervise"] if supervise else []), *base]
 
